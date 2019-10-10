@@ -142,6 +142,7 @@ div.content-wrapper {
   width: 24px;
   height: 24px;
   display: inline;
+  vertical-align: text-bottom;
 }
 
 /* ======================================================================== */
@@ -1085,6 +1086,22 @@ div.author-info div.committer {
 .merge-indicator-warning .octicon {
   color: white;
   font-size: 30px;
+}
+
+.gpg-verified {
+  color: #3c763d;
+  border: 1px solid #3c763d;
+  border-radius: 3px;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.gpg-unverified {
+  color: #777;
+  border: 1px solid #777;
+  border-radius: 3px;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
 /****************************************************************************/

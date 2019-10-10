@@ -20,6 +20,7 @@ import javax.servlet.{FilterChain, ServletRequest, ServletResponse}
 import is.tagomor.woothee.Classifier
 
 import scala.util.Try
+import scala.util.Using
 import net.coobird.thumbnailator.Thumbnails
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.lib.ObjectId
@@ -240,7 +241,7 @@ abstract class ControllerBase
       case false                                => None
     }
 
-    using(new TreeWalk(git.getRepository)) { treeWalk =>
+    Using.resource(new TreeWalk(git.getRepository)) { treeWalk =>
       treeWalk.addTree(revCommit.getTree)
       treeWalk.setRecursive(true)
       _getPathObjectId(path, treeWalk)
@@ -268,7 +269,7 @@ abstract class ControllerBase
           response.setContentLength(attrs("size").toInt)
           val oid = attrs("oid").split(":")(1)
 
-          using(new FileInputStream(FileUtil.getLfsFilePath(repository.owner, repository.name, oid))) { in =>
+          Using.resource(new FileInputStream(FileUtil.getLfsFilePath(repository.owner, repository.name, oid))) { in =>
             IOUtils.copy(in, response.getOutputStream)
           }
         } else {
@@ -324,6 +325,8 @@ case class Context(
 trait AccountManagementControllerBase extends ControllerBase {
   self: AccountService =>
 
+  private val logger = LoggerFactory.getLogger(getClass)
+
   protected def updateImage(userName: String, fileId: Option[String], clearImage: Boolean): Unit =
     if (clearImage) {
       getAccountByUserName(userName).flatMap(_.image).foreach { image =>
@@ -331,17 +334,21 @@ trait AccountManagementControllerBase extends ControllerBase {
         updateAvatarImage(userName, None)
       }
     } else {
-      fileId.foreach { fileId =>
-        val filename = "avatar." + FileUtil.getExtension(session.getAndRemove(Keys.Session.Upload(fileId)).get)
-        val uploadDir = getUserUploadDir(userName)
-        if (!uploadDir.exists) {
-          uploadDir.mkdirs()
+      try {
+        fileId.foreach { fileId =>
+          val filename = "avatar." + FileUtil.getExtension(session.getAndRemove(Keys.Session.Upload(fileId)).get)
+          val uploadDir = getUserUploadDir(userName)
+          if (!uploadDir.exists) {
+            uploadDir.mkdirs()
+          }
+          Thumbnails
+            .of(new File(getTemporaryDir(session.getId), FileUtil.checkFilename(fileId)))
+            .size(324, 324)
+            .toFile(new File(uploadDir, FileUtil.checkFilename(filename)))
+          updateAvatarImage(userName, Some(filename))
         }
-        Thumbnails
-          .of(new File(getTemporaryDir(session.getId), FileUtil.checkFilename(fileId)))
-          .size(324, 324)
-          .toFile(new File(uploadDir, FileUtil.checkFilename(filename)))
-        updateAvatarImage(userName, Some(filename))
+      } catch {
+        case e: Exception => logger.info("Error while updateImage" + e.getMessage)
       }
     }
 
@@ -359,7 +366,7 @@ trait AccountManagementControllerBase extends ControllerBase {
       params: Map[String, Seq[String]],
       messages: Messages
     ): Option[String] = {
-      val extraMailAddresses = params.filterKeys(k => k.startsWith("extraMailAddresses"))
+      val extraMailAddresses = params.view.filterKeys(k => k.startsWith("extraMailAddresses"))
       if (extraMailAddresses.exists {
             case (k, v) =>
               v.contains(value)
@@ -382,7 +389,7 @@ trait AccountManagementControllerBase extends ControllerBase {
       params: Map[String, Seq[String]],
       messages: Messages
     ): Option[String] = {
-      val extraMailAddresses = params.filterKeys(k => k.startsWith("extraMailAddresses"))
+      val extraMailAddresses = params.view.filterKeys(k => k.startsWith("extraMailAddresses"))
       if (Some(value) == params.optionValue("mailAddress") || extraMailAddresses.count {
             case (k, v) =>
               v.contains(value)

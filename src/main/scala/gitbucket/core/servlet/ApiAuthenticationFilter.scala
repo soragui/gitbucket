@@ -7,6 +7,10 @@ import gitbucket.core.model.Account
 import gitbucket.core.service.SystemSettingsService.SystemSettings
 import gitbucket.core.service.{AccessTokenService, AccountService, SystemSettingsService}
 import gitbucket.core.util.{AuthUtil, Keys}
+import gitbucket.core.model.Profile.profile.blockingApi._
+// Imported names have higher precedence than names, defined in other files.
+// If Database is not bound by explicit import, then "Database" refers to the Database introduced by the wildcard import above.
+import gitbucket.core.servlet.Database
 
 class ApiAuthenticationFilter extends Filter with AccessTokenService with AccountService with SystemSettingsService {
 
@@ -26,10 +30,18 @@ class ApiAuthenticationFilter extends Filter with AccessTokenService with Accoun
         case _                                 => Left(())
       }
       .orElse {
+        Option(req.getParameter("access_token")).map(AccessTokenService.getAccountByAccessToken(_).toRight(()))
+      }
+      .orElse {
         Option(request.getSession.getAttribute(Keys.Session.LoginAccount).asInstanceOf[Account]).map(Right(_))
       } match {
-      case Some(Right(account)) => request.setAttribute(Keys.Session.LoginAccount, account); chain.doFilter(req, res)
-      case None                 => chain.doFilter(req, res)
+      case Some(Right(account)) =>
+        request.setAttribute(Keys.Session.LoginAccount, account)
+        Database() withTransaction { implicit session =>
+          updateLastLoginDate(account.userName)
+        }
+        chain.doFilter(req, res)
+      case None => chain.doFilter(req, res)
       case Some(Left(_)) => {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED)
         response.setContentType("application/json; charset=utf-8")

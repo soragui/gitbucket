@@ -4,18 +4,31 @@ import gitbucket.core.model.{CommitComments => _, Session => _, _}
 import gitbucket.core.model.Profile._
 import gitbucket.core.model.Profile.profile.blockingApi._
 import difflib.{Delta, DiffUtils}
-import gitbucket.core.util.SyntaxSugars._
+import gitbucket.core.service.RepositoryService.RepositoryInfo
+import gitbucket.core.api.JsonFormat
+import gitbucket.core.controller.Context
+import gitbucket.core.plugin.PluginRegistry
 import gitbucket.core.util.Directory._
 import gitbucket.core.util.Implicits._
 import gitbucket.core.util.JGitUtil
+import gitbucket.core.util.StringUtil._
 import gitbucket.core.util.JGitUtil.{CommitInfo, DiffInfo}
 import gitbucket.core.view
 import gitbucket.core.view.helpers
 import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.lib.ObjectId
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
+import scala.util.Using
 
-trait PullRequestService { self: IssuesService with CommitsService =>
+trait PullRequestService {
+  self: IssuesService
+    with CommitsService
+    with WebHookService
+    with WebHookPullRequestService
+    with RepositoryService
+    with MergeService
+    with ActivityService =>
   import PullRequestService._
 
   def getPullRequest(owner: String, repository: String, issueId: Int)(
@@ -34,6 +47,14 @@ trait PullRequestService { self: IssuesService with CommitsService =>
       .filter(_.byPrimaryKey(owner, repository, issueId))
       .map(pr => pr.commitIdTo -> pr.commitIdFrom)
       .update((commitIdTo, commitIdFrom))
+
+  def updateDraftToPullRequest(owner: String, repository: String, issueId: Int)(
+    implicit s: Session
+  ): Unit =
+    PullRequests
+      .filter(_.byPrimaryKey(owner, repository, issueId))
+      .map(pr => pr.isDraft)
+      .update(false)
 
   def getPullRequestCountGroupByUser(closed: Boolean, owner: Option[String], repository: Option[String])(
     implicit s: Session
@@ -76,27 +97,68 @@ trait PullRequestService { self: IssuesService with CommitsService =>
 //      .map { x => PullRequestCount(x._1, x._2) }
 
   def createPullRequest(
-    originUserName: String,
-    originRepositoryName: String,
+    originRepository: RepositoryInfo,
     issueId: Int,
     originBranch: String,
     requestUserName: String,
     requestRepositoryName: String,
     requestBranch: String,
     commitIdFrom: String,
-    commitIdTo: String
-  )(implicit s: Session): Unit =
-    PullRequests insert PullRequest(
-      originUserName,
-      originRepositoryName,
-      issueId,
-      originBranch,
-      requestUserName,
-      requestRepositoryName,
-      requestBranch,
-      commitIdFrom,
-      commitIdTo
-    )
+    commitIdTo: String,
+    isDraft: Boolean,
+    loginAccount: Account
+  )(implicit s: Session, context: Context): Unit = {
+    getIssue(originRepository.owner, originRepository.name, issueId.toString).foreach { baseIssue =>
+      PullRequests insert PullRequest(
+        originRepository.owner,
+        originRepository.name,
+        issueId,
+        originBranch,
+        requestUserName,
+        requestRepositoryName,
+        requestBranch,
+        commitIdFrom,
+        commitIdTo,
+        isDraft
+      )
+
+      // fetch requested branch
+      fetchAsPullRequest(
+        originRepository.owner,
+        originRepository.name,
+        requestUserName,
+        requestRepositoryName,
+        requestBranch,
+        issueId
+      )
+
+      // record activity
+      recordPullRequestActivity(
+        originRepository.owner,
+        originRepository.name,
+        loginAccount.userName,
+        issueId,
+        baseIssue.title
+      )
+
+      // call web hook
+      callPullRequestWebHook("opened", originRepository, issueId, loginAccount)
+
+      getIssue(originRepository.owner, originRepository.name, issueId.toString) foreach { issue =>
+        // extract references and create refer comment
+        createReferComment(
+          originRepository.owner,
+          originRepository.name,
+          issue,
+          baseIssue.title + " " + baseIssue.content,
+          loginAccount
+        )
+
+        // call hooks
+        PluginRegistry().getPullRequestHooks.foreach(_.created(issue, originRepository))
+      }
+    }
+  }
 
   def getPullRequestsByRequest(userName: String, repositoryName: String, branch: String, closed: Option[Boolean])(
     implicit s: Session
@@ -164,7 +226,10 @@ trait PullRequestService { self: IssuesService with CommitsService =>
   /**
    * Fetch pull request contents into refs/pull/${issueId}/head and update pull request table.
    */
-  def updatePullRequests(owner: String, repository: String, branch: String)(implicit s: Session): Unit =
+  def updatePullRequests(owner: String, repository: String, branch: String, loginAccount: Account, action: String)(
+    implicit s: Session,
+    c: JsonFormat.Context
+  ): Unit = {
     getPullRequestsByRequest(owner, repository, branch, Some(false)).foreach { pullreq =>
       if (Repositories.filter(_.byRepository(pullreq.userName, pullreq.repositoryName)).exists.run) {
         // Update the git repository
@@ -204,8 +269,17 @@ trait PullRequestService { self: IssuesService with CommitsService =>
 
         // Update commit id in the PULL_REQUEST table
         updateCommitId(pullreq.userName, pullreq.repositoryName, pullreq.issueId, commitIdTo, commitIdFrom)
+
+        // call web hook
+        callPullRequestWebHookByRequestBranch(
+          action,
+          getRepository(owner, repository).get,
+          pullreq.requestBranch,
+          loginAccount
+        )
       }
     }
+  }
 
   def getPullRequestByRequestCommit(
     userName: String,
@@ -253,8 +327,8 @@ trait PullRequestService { self: IssuesService with CommitsService =>
           .map { diff =>
             (diff.oldContent, diff.newContent) match {
               case (Some(oldContent), Some(newContent)) => {
-                val oldLines = oldContent.replace("\r\n", "\n").split("\n")
-                val newLines = newContent.replace("\r\n", "\n").split("\n")
+                val oldLines = convertLineSeparator(oldContent, "LF").split("\n")
+                val newLines = convertLineSeparator(newContent, "LF").split("\n")
                 file -> Option(DiffUtils.diff(oldLines.toList.asJava, newLines.toList.asJava))
               }
               case _ =>
@@ -313,7 +387,7 @@ trait PullRequestService { self: IssuesService with CommitsService =>
     requestRepositoryName: String,
     requestCommitId: String
   ): (Seq[Seq[CommitInfo]], Seq[DiffInfo]) =
-    using(
+    Using.resources(
       Git.open(getRepositoryDir(userName, repositoryName)),
       Git.open(getRepositoryDir(requestUserName, requestRepositoryName))
     ) { (oldGit, newGit) =>
@@ -384,6 +458,58 @@ trait PullRequestService { self: IssuesService with CommitsService =>
     updateClosed(owner, repository, pull.issueId, true)
   }
 
+  /**
+   * Parses branch identifier and extracts owner and branch name as tuple.
+   *
+   * - "owner:branch" to ("owner", "branch")
+   * - "branch" to ("defaultOwner", "branch")
+   */
+  def parseCompareIdentifier(value: String, defaultOwner: String): (String, String) =
+    if (value.contains(':')) {
+      val array = value.split(":")
+      (array(0), array(1))
+    } else {
+      (defaultOwner, value)
+    }
+
+  def getPullRequestCommitFromTo(
+    originRepository: RepositoryInfo,
+    forkedRepository: RepositoryInfo,
+    originId: String,
+    forkedId: String
+  ): (Option[ObjectId], Option[ObjectId]) = {
+    Using.resources(
+      Git.open(getRepositoryDir(originRepository.owner, originRepository.name)),
+      Git.open(getRepositoryDir(forkedRepository.owner, forkedRepository.name))
+    ) {
+      case (oldGit, newGit) =>
+        if (originRepository.branchList.contains(originId)) {
+          val forkedId2 =
+            forkedRepository.tags.collectFirst { case x if x.name == forkedId => x.id }.getOrElse(forkedId)
+
+          val originId2 = JGitUtil.getForkedCommitId(
+            oldGit,
+            newGit,
+            originRepository.owner,
+            originRepository.name,
+            originId,
+            forkedRepository.owner,
+            forkedRepository.name,
+            forkedId2
+          )
+
+          (Option(oldGit.getRepository.resolve(originId2)), Option(newGit.getRepository.resolve(forkedId2)))
+
+        } else {
+          val originId2 =
+            originRepository.tags.collectFirst { case x if x.name == originId => x.id }.getOrElse(originId)
+          val forkedId2 =
+            forkedRepository.tags.collectFirst { case x if x.name == forkedId => x.id }.getOrElse(forkedId)
+
+          (Option(oldGit.getRepository.resolve(originId2)), Option(newGit.getRepository.resolve(forkedId2)))
+        }
+    }
+  }
 }
 
 object PullRequestService {
@@ -418,7 +544,7 @@ object PullRequestService {
     lazy val commitStateSummary: (CommitState, String) = {
       val stateMap = statuses.groupBy(_.state)
       val state = CommitState.combine(stateMap.keySet)
-      val summary = stateMap.map { case (keyState, states) => states.size + " " + keyState.name }.mkString(", ")
+      val summary = stateMap.map { case (keyState, states) => s"${states.size} ${keyState.name}" }.mkString(", ")
       state -> summary
     }
     lazy val statusesAndRequired: List[(CommitStatus, Boolean)] = statuses.map { s =>

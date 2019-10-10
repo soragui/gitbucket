@@ -55,6 +55,7 @@ trait WebHookService {
       .map { case (w, t) => w -> t.event }
       .list
       .groupBy(_._1)
+      .view
       .mapValues(_.map(_._2).toSet)
       .toList
       .sortBy(_._1.url)
@@ -87,6 +88,7 @@ trait WebHookService {
       .map { case (w, t) => w -> t.event }
       .list
       .groupBy(_._1)
+      .view
       .mapValues(_.map(_._2).toSet)
       .headOption
 
@@ -136,6 +138,7 @@ trait WebHookService {
       .map { case (w, t) => w -> t.event }
       .list
       .groupBy(_._1)
+      .view
       .mapValues(_.map(_._2).toSet)
       .toList
       .sortBy(_._1.url)
@@ -164,6 +167,7 @@ trait WebHookService {
       .map { case (w, t) => w -> t.event }
       .list
       .groupBy(_._1)
+      .view
       .mapValues(_.map(_._2).toSet)
       .headOption
 
@@ -233,7 +237,7 @@ trait WebHookService {
             val httpClient = HttpClientBuilder.create.useSystemProperties.addInterceptorLast(itcp).build
             logger.debug(s"start web hook invocation for ${webHook.url}")
             val httpPost = new HttpPost(webHook.url)
-            logger.info(s"Content-Type: ${webHook.ctype.ctype}")
+            logger.debug(s"Content-Type: ${webHook.ctype.ctype}")
             httpPost.addHeader("Content-Type", webHook.ctype.ctype)
             httpPost.addHeader("X-Github-Event", event.name)
             httpPost.addHeader("X-Github-Delivery", java.util.UUID.randomUUID().toString)
@@ -311,7 +315,6 @@ trait WebHookPullRequestService extends WebHookService {
     action: String,
     repository: RepositoryService.RepositoryInfo,
     issue: Issue,
-    baseUrl: String,
     sender: Account
   )(implicit s: Session, context: JsonFormat.Context): Unit = {
     callWebHookOf(repository.owner, repository.name, WebHook.Issues) {
@@ -341,7 +344,6 @@ trait WebHookPullRequestService extends WebHookService {
     action: String,
     repository: RepositoryService.RepositoryInfo,
     issueId: Int,
-    baseUrl: String,
     sender: Account
   )(implicit s: Session, c: JsonFormat.Context): Unit = {
     import WebHookService._
@@ -398,13 +400,12 @@ trait WebHookPullRequestService extends WebHookService {
       if wht.event === WebHook.PullRequest.asInstanceOf[WebHook.Event].bind && wht.byRepositoryWebHook(wh)
     } yield {
       ((is, iu, pr, bu, ru), wh)
-    }).list.groupBy(_._1).mapValues(_.map(_._2))
+    }).list.groupBy(_._1).map { case (k, v) => (k, v.map(_._2)) }
 
   def callPullRequestWebHookByRequestBranch(
     action: String,
     requestRepository: RepositoryService.RepositoryInfo,
     requestBranch: String,
-    baseUrl: String,
     sender: Account
   )(implicit s: Session, c: JsonFormat.Context): Unit = {
     import WebHookService._
@@ -450,7 +451,6 @@ trait WebHookPullRequestReviewCommentService extends WebHookService {
     repository: RepositoryService.RepositoryInfo,
     issue: Issue,
     pullRequest: PullRequest,
-    baseUrl: String,
     sender: Account
   )(implicit s: Session, c: JsonFormat.Context): Unit = {
     import WebHookService._
@@ -544,11 +544,8 @@ object WebHookService {
   object WebHookCreatePayload {
 
     def apply(
-      git: Git,
       sender: Account,
-      refName: String,
       repositoryInfo: RepositoryInfo,
-      commits: List[CommitInfo],
       repositoryOwner: Account,
       ref: String,
       refType: String
@@ -559,7 +556,7 @@ object WebHookService {
         ref_type = refType,
         description = repositoryInfo.repository.description.getOrElse(""),
         master_branch = repositoryInfo.repository.defaultBranch,
-        repository = ApiRepository.forWebhookPayload(repositoryInfo, owner = ApiUser(repositoryOwner))
+        repository = ApiRepository(repositoryInfo, repositoryOwner)
       )
   }
 
@@ -601,9 +598,9 @@ object WebHookService {
         before = ObjectId.toString(oldId),
         after = ObjectId.toString(newId),
         commits = commits.map { commit =>
-          ApiCommit.forWebhookPayload(git, RepositoryName(repositoryInfo), commit)
+          ApiCommit(git, RepositoryName(repositoryInfo), commit)
         },
-        repository = ApiRepository.forWebhookPayload(repositoryInfo, owner = ApiUser(repositoryOwner))
+        repository = ApiRepository(repositoryInfo, repositoryOwner)
       )
 
     def createDummyPayload(sender: Account): WebHookPushPayload =

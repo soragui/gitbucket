@@ -102,6 +102,7 @@ object helpers extends AvatarImageProvider with LinkConverter with RequestCache 
   def markdown(
     markdown: String,
     repository: RepositoryService.RepositoryInfo,
+    branch: String,
     enableWikiLink: Boolean,
     enableRefsLink: Boolean,
     enableLineBreaks: Boolean,
@@ -114,6 +115,7 @@ object helpers extends AvatarImageProvider with LinkConverter with RequestCache 
       Markdown.toHtml(
         markdown = markdown,
         repository = repository,
+        branch = branch,
         enableWikiLink = enableWikiLink,
         enableRefsLink = enableRefsLink,
         enableAnchor = enableAnchor,
@@ -156,8 +158,10 @@ object helpers extends AvatarImageProvider with LinkConverter with RequestCache 
   /**
    * Creates a link to the issue or the pull request from the issue id.
    */
-  def issueLink(repository: RepositoryService.RepositoryInfo, issueId: Int)(implicit context: Context): Html = {
-    Html(createIssueLink(repository, issueId))
+  def issueLink(repository: RepositoryService.RepositoryInfo, issueId: Int, title: String)(
+    implicit context: Context
+  ): Html = {
+    Html(createIssueLink(repository, issueId, title))
   }
 
   /**
@@ -214,14 +218,18 @@ object helpers extends AvatarImageProvider with LinkConverter with RequestCache 
         .replaceAll(
           "\\[branch:([^\\s]+?)/([^\\s]+?)#([^\\s]+?)\\]",
           (m: Match) =>
-            s"""<a href="${context.path}/${m.group(1)}/${m.group(2)}/tree/${encodeRefName(m.group(3))}">${m
-              .group(3)}</a>"""
+            s"""<a href="${context.path}/${m.group(1)}/${m.group(2)}/tree/${encodeRefName(m.group(3))}">${StringUtil
+              .escapeHtml(
+                m.group(3)
+              )}</a>"""
         )
         .replaceAll(
           "\\[tag:([^\\s]+?)/([^\\s]+?)#([^\\s]+?)\\]",
           (m: Match) =>
-            s"""<a href="${context.path}/${m.group(1)}/${m.group(2)}/tree/${encodeRefName(m.group(3))}">${m
-              .group(3)}</a>"""
+            s"""<a href="${context.path}/${m.group(1)}/${m.group(2)}/tree/${encodeRefName(m.group(3))}">${StringUtil
+              .escapeHtml(
+                m.group(3)
+              )}</a>"""
         )
         .replaceAll("\\[user:([^\\s]+?)\\]", (m: Match) => user(m.group(1)).body)
         .replaceAll(
@@ -229,6 +237,14 @@ object helpers extends AvatarImageProvider with LinkConverter with RequestCache 
           (m: Match) =>
             s"""<a href="${context.path}/${m.group(1)}/${m.group(2)}/commit/${m.group(3)}">${m.group(1)}/${m
               .group(2)}@${m.group(3).substring(0, 7)}</a>"""
+        )
+        .replaceAll(
+          "\\[release:([^\\s]+?)/([^\\s]+?)/([^\\s]+?):(.+)\\]",
+          (m: Match) =>
+            s"""<a href="${context.path}/${m.group(1)}/${m.group(2)}/releases/${encodeRefName(m.group(3))}">${StringUtil
+              .escapeHtml(
+                m.group(4)
+              )}</a>"""
         )
     )
 

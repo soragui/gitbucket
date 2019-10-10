@@ -15,6 +15,7 @@
   collaborators: List[String],
   milestones: List[gitbucket.core.model.Milestone],
   priorities: List[gitbucket.core.model.Priority],
+  defaultPriority: Option[gitbucket.core.model.Priority],
   labels: List[gitbucket.core.model.Label])(implicit context: gitbucket.core.controller.Context)
 @import gitbucket.core.view.helpers
 @gitbucket.core.html.main(s"Pull requests - ${repository.owner}/${repository.name}", Some(repository)){
@@ -27,6 +28,9 @@
           }
         }
         @gitbucket.core.helper.html.dropdown(originId, "base", filter=("origin_branch", "Find Branch...")) {
+          @if(!originRepository.branchList.contains(originId)){
+            <li><a href="#" class="origin-branch" data-branch="@helpers.encodeRefName(originId)">@gitbucket.core.helper.html.checkicon(true) @originId</a></li>
+          }
           @originRepository.branchList.map { branch =>
             <li><a href="#" class="origin-branch" data-branch="@helpers.encodeRefName(branch)">@gitbucket.core.helper.html.checkicon(branch == originId) @branch</a></li>
           }
@@ -38,16 +42,21 @@
           }
         }
         @gitbucket.core.helper.html.dropdown(forkedId, "compare", filter=("forked_branch", "Find Branch...")) {
+          @if(!forkedRepository.branchList.contains(forkedId)){
+            <li><a href="#" class="origin-branch" data-branch="@helpers.encodeRefName(forkedId)">@gitbucket.core.helper.html.checkicon(true) @forkedId</a></li>
+          }
           @forkedRepository.branchList.map { branch =>
             <li><a href="#" class="forked-branch" data-branch="@helpers.encodeRefName(branch)">@gitbucket.core.helper.html.checkicon(branch == forkedId) @branch</a></li>
           }
         }
       </div>
-      <div class="check-conflict" style="display: none;">
-        <img src="@helpers.assets("/common/images/indicator.gif")"/> Checking...
-      </div>
+      @if(originRepository.branchList.contains(originId) && forkedRepository.branchList.contains(forkedId)){
+        <div class="check-conflict" style="display: none;">
+          <img src="@helpers.assets("/common/images/indicator.gif")"/> Checking...
+        </div>
+      }
     </div>
-    @if(commits.nonEmpty && context.loginAccount.isDefined){
+    @if(commits.nonEmpty && context.loginAccount.isDefined && originRepository.branchList.contains(originId) && forkedRepository.branchList.contains(forkedId)){
       <div style="margin-bottom: 10px; padding: 8px; background-color: #fff9ea" id="create-pull-request" class="box-content">
         <a href="#" class="btn btn-success" id="show-form">Create pull request</a>
         &nbsp;&nbsp;
@@ -70,19 +79,29 @@
                 completionContext  = "issues",
                 style              = "height: 200px;"
               )
-              <input type="hidden" name="targetUserName" value="@originRepository.owner"/>
-              <input type="hidden" name="targetBranch" value="@originId"/>
-              <input type="hidden" name="requestUserName" value="@forkedRepository.owner"/>
-              <input type="hidden" name="requestRepositoryName" value="@forkedRepository.name"/>
-              <input type="hidden" name="requestBranch" value="@forkedId"/>
-              <input type="hidden" name="commitIdFrom" value="@sourceId"/>
-              <input type="hidden" name="commitIdTo" value="@commitId"/>
-              <div class="align-right">
-                <input type="submit" class="btn btn-success" value="Create pull request"/>
+              <div class="text-right">
+                <input type="hidden" name="targetUserName" value="@originRepository.owner"/>
+                <input type="hidden" name="targetBranch" value="@originId"/>
+                <input type="hidden" name="requestUserName" value="@forkedRepository.owner"/>
+                <input type="hidden" name="requestRepositoryName" value="@forkedRepository.name"/>
+                <input type="hidden" name="requestBranch" value="@forkedId"/>
+                <input type="hidden" name="commitIdFrom" value="@sourceId"/>
+                <input type="hidden" name="commitIdTo" value="@commitId"/>
+                <input type="hidden" id="is-draft" name="isDraft" value=false />
+                <div class="btn-group dropdown">
+                  <input type="submit" class="btn btn-success" tabindex="2" value="Create pull request" id="submit-button" validate="true" formaction="@context.path/@originRepository.owner/@originRepository.name/pulls/new"/>
+                  <button type="button" class="btn btn-success dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                    <span class="caret"></span>
+                  </button>
+                  <ul class="dropdown-menu dropdown-menu-right">
+                    <li><a id="pull-request">Create pull request</a></li>
+                    <li><a id="draft-request">Create draft request</a></li>
+                  </ul>
+                </div>
               </div>
             </div>
             <div class="col-md-3">
-              @gitbucket.core.issues.html.issueinfo(None, Nil, Nil, collaborators, milestones.map((_, 0, 0)), priorities, None, labels, hasOriginWritePermission, repository)
+              @gitbucket.core.issues.html.issueinfo(None, Nil, Nil, collaborators, milestones.map((_, 0, 0)), priorities, defaultPriority, labels, hasOriginWritePermission, repository)
             </div>
           </div>
         </form>
@@ -93,16 +112,6 @@
         <h4>There isn't anything to compare.</h4>
         <span class="strong">@originRepository.owner:@originId</span> and <span class="strong">@forkedRepository.owner:@forkedId</span> are identical.
       </div>
-      @*
-      <table class="table table-bordered table-hover table-issues">
-        <tr>
-          <td style="padding: 20px; background-color: #eee; text-align: center;">
-            <h4>There isn't anything to compare.</h4>
-            <span class="strong">@originRepository.owner:@originId</span> and <span class="strong">@forkedRepository.owner:@forkedId</span> are identical.
-          </td>
-        </tr>
-      </table>
-      *@
     } else {
       <div style="margin-bottom: 10px; padding: 4px;" class="panel panel-default">
         <table class="fill-width">
@@ -146,14 +155,6 @@
                 @helpers.user(commit.authorName, commit.authorEmailAddress, "username strong")
               </td>
               <td><span class="monospace">@commit.shortMessage</span></td>
-              @*
-              <span class="badge" style="display: inline">@if(comments.isDefined){
-              @comments.get.flatMap @{
-              case comment: CommitComment => Some(comment)
-              case other => None
-              }.count(t => t.commitId == commit.id && !t.pullRequest)
-              }</span>
-              *@
               <td style="width: 10%; text-align: right;">
                 <a href="@helpers.url(repository)/commit/@commit.id" class="monospace">@commit.id.substring(0, 7)</a>
               </td>
@@ -163,12 +164,24 @@
         }
       </div>
       @gitbucket.core.helper.html.diff(diffs, repository, Some(commitId), Some(sourceId), true, None, false, false)
-      <p>Showing you all comments on commits in this comparison.</p>
       @gitbucket.core.issues.html.commentlist(None, comments, false, repository, None)
     }
   }
 }
 <script>
+
+$(function(){
+  $('#draft-request').click(function(){
+    $("#is-draft").val(true);
+    $('#submit-button').attr('value', 'Create draft request')
+  });
+  $('#pull-request').click(function(){
+  $("#is-draft").val(false);
+    $('#submit-button').attr('value', 'Create pull request')
+  });
+});
+
+
 $(function(){
   function updateSelector(e){
     e.parents('ul').find('i').attr('class', 'octicon');
@@ -220,7 +233,7 @@ $(function(){
     $('#show-form').click();
   }
 
-  @if(context.loginAccount.isDefined){
+  @if(context.loginAccount.isDefined && originRepository.branchList.contains(originId) && forkedRepository.branchList.contains(forkedId)){
     function checkConflict(from, to){
       $('.check-conflict').show();
       $.get('@helpers.url(forkedRepository)/compare/' + from + '...' + to + '/mergecheck',

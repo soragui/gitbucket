@@ -24,8 +24,10 @@ class IssuesController
     with ReadableUsersAuthenticator
     with ReferrerAuthenticator
     with WritableUsersAuthenticator
+    with MergeService
     with PullRequestService
     with WebHookIssueCommentService
+    with WebHookPullRequestReviewCommentService
     with CommitsService
     with PrioritiesService
 
@@ -143,7 +145,7 @@ trait IssuesControllerBase extends ControllerBase {
         form.assignedUserName,
         form.milestoneId,
         form.priorityId,
-        form.labelNames.toArray.flatMap(_.split(",")),
+        form.labelNames.toSeq.flatMap(_.split(",")),
         context.loginAccount.get
       )
 
@@ -256,6 +258,7 @@ trait IssuesControllerBase extends ControllerBase {
                 "content" -> Markdown.toHtml(
                   markdown = x.content getOrElse "No description given.",
                   repository = repository,
+                  branch = repository.repository.defaultBranch,
                   enableWikiLink = false,
                   enableRefsLink = true,
                   enableAnchor = true,
@@ -283,6 +286,7 @@ trait IssuesControllerBase extends ControllerBase {
                 "content" -> view.Markdown.toHtml(
                   markdown = x.content,
                   repository = repository,
+                  branch = repository.repository.defaultBranch,
                   enableWikiLink = false,
                   enableRefsLink = true,
                   enableAnchor = true,

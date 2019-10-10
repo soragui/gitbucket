@@ -8,7 +8,8 @@ import gitbucket.core.util.{FileUtil, StringUtil}
 import org.apache.commons.io.{FileUtils, IOUtils}
 import org.json4s.jackson.Serialization._
 import org.apache.http.HttpStatus
-import gitbucket.core.util.SyntaxSugars._
+
+import scala.util.Using
 
 /**
  * Provides GitLFS Transfer API
@@ -28,8 +29,8 @@ class GitLfsTransferServlet extends HttpServlet {
       if (file.exists()) {
         res.setStatus(HttpStatus.SC_OK)
         res.setContentType("application/octet-stream")
-        res.setContentLength(file.length.toInt)
-        using(new FileInputStream(file), res.getOutputStream) { (in, out) =>
+        res.setHeader("Content-Length", file.length.toString)
+        Using.resources(new FileInputStream(file), res.getOutputStream) { (in, out) =>
           IOUtils.copy(in, out)
           out.flush()
         }
@@ -45,7 +46,7 @@ class GitLfsTransferServlet extends HttpServlet {
     } yield {
       val file = new File(FileUtil.getLfsFilePath(owner, repository, oid))
       FileUtils.forceMkdir(file.getParentFile)
-      using(req.getInputStream, new FileOutputStream(file)) { (in, out) =>
+      Using.resources(req.getInputStream, new FileOutputStream(file)) { (in, out) =>
         IOUtils.copy(in, out)
       }
       res.setStatus(HttpStatus.SC_OK)
@@ -71,7 +72,7 @@ class GitLfsTransferServlet extends HttpServlet {
 
   private def sendError(res: HttpServletResponse, status: Int, message: String): Unit = {
     res.setStatus(status)
-    using(res.getWriter()) { out =>
+    Using.resource(res.getWriter()) { out =>
       out.write(write(GitLfs.Error(message)))
       out.flush()
     }

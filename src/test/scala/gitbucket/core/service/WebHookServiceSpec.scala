@@ -5,8 +5,9 @@ import org.scalatest.FunSuite
 import gitbucket.core.model.WebHookContentType
 
 class WebHookServiceSpec extends FunSuite with ServiceSpecBase {
-  lazy val service = new WebHookPullRequestService with AccountService with RepositoryService with PullRequestService
-  with IssuesService with CommitsService with LabelsService with MilestonesService with PrioritiesService
+  lazy val service = new WebHookPullRequestService with AccountService with ActivityService with RepositoryService
+  with MergeService with PullRequestService with IssuesService with CommitsService with LabelsService
+  with MilestonesService with PrioritiesService with WebHookPullRequestReviewCommentService
 
   test("WebHookPullRequestService.getPullRequestsByRequestForWebhook") {
     withTestDB { implicit session =>
@@ -18,7 +19,7 @@ class WebHookServiceSpec extends FunSuite with ServiceSpecBase {
       val (issue3, pullreq3) = generateNewPullRequest("user3/repo3/master3", "user2/repo2/master2", loginUser = "root")
       val (issue32, pullreq32) =
         generateNewPullRequest("user3/repo3/master32", "user2/repo2/master2", loginUser = "root")
-      generateNewPullRequest("user2/repo2/master2", "user1/repo1/master2")
+      generateNewPullRequest("user2/repo2/master2", "user1/repo1/master2", loginUser = "root")
       service.addWebHook("user1", "repo1", "webhook1-1", Set(WebHook.PullRequest), WebHookContentType.FORM, Some("key"))
       service.addWebHook("user1", "repo1", "webhook1-2", Set(WebHook.PullRequest), WebHookContentType.FORM, Some("key"))
       service.addWebHook("user2", "repo2", "webhook2-1", Set(WebHook.PullRequest), WebHookContentType.FORM, Some("key"))
@@ -28,7 +29,7 @@ class WebHookServiceSpec extends FunSuite with ServiceSpecBase {
 
       assert(service.getPullRequestsByRequestForWebhook("user1", "repo1", "master1") == Map.empty)
 
-      val r = service.getPullRequestsByRequestForWebhook("user2", "repo2", "master2").mapValues(_.map(_.url).toSet)
+      val r = service.getPullRequestsByRequestForWebhook("user2", "repo2", "master2").view.mapValues(_.map(_.url).toSet)
 
       assert(r.size == 3)
       assert(r((issue1, issueUser, pullreq1, user1, user2)) == Set("webhook1-1", "webhook1-2"))
@@ -38,7 +39,8 @@ class WebHookServiceSpec extends FunSuite with ServiceSpecBase {
       // when closed, it not founds.
       service.updateClosed("user1", "repo1", issue1.issueId, true)
 
-      val r2 = service.getPullRequestsByRequestForWebhook("user2", "repo2", "master2").mapValues(_.map(_.url).toSet)
+      val r2 =
+        service.getPullRequestsByRequestForWebhook("user2", "repo2", "master2").view.mapValues(_.map(_.url).toSet)
       assert(r2.size == 2)
       assert(r2((issue3, issueUser, pullreq3, user3, user2)) == Set("webhook3-1", "webhook3-2"))
       assert(r2((issue32, issueUser, pullreq32, user3, user2)) == Set("webhook3-1", "webhook3-2"))

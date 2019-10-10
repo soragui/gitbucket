@@ -12,14 +12,14 @@ import gitbucket.core.util.JGitUtil._
 import gitbucket.core.util.SyntaxSugars._
 import gitbucket.core.util.Implicits._
 import gitbucket.core.util.Directory._
+import gitbucket.core.model.WebHookContentType
 import org.scalatra.forms._
-import org.apache.commons.io.FileUtils
 import org.scalatra.i18n.Messages
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.lib.Constants
 import org.eclipse.jgit.lib.ObjectId
-import gitbucket.core.model.WebHookContentType
-import gitbucket.core.plugin.PluginRegistry
+
+import scala.util.Using
 
 class RepositorySettingsController
     extends RepositorySettingsControllerBase
@@ -148,31 +148,8 @@ trait RepositorySettingsControllerBase extends ControllerBase {
     if (repository.name != form.repositoryName) {
       // Update database
       renameRepository(repository.owner, repository.name, repository.owner, form.repositoryName)
-      // Move git repository
-      defining(getRepositoryDir(repository.owner, repository.name)) { dir =>
-        if (dir.isDirectory) {
-          FileUtils.moveDirectory(dir, getRepositoryDir(repository.owner, form.repositoryName))
-        }
-      }
-      // Move wiki repository
-      defining(getWikiRepositoryDir(repository.owner, repository.name)) { dir =>
-        if (dir.isDirectory) {
-          FileUtils.moveDirectory(dir, getWikiRepositoryDir(repository.owner, form.repositoryName))
-        }
-      }
-      // Move files directory
-      defining(getRepositoryFilesDir(repository.owner, repository.name)) { dir =>
-        if (dir.isDirectory) {
-          FileUtils.moveDirectory(dir, getRepositoryFilesDir(repository.owner, form.repositoryName))
-        }
-      }
-      // Delete parent directory
-      FileUtil.deleteDirectoryIfEmpty(getRepositoryFilesDir(repository.owner, repository.name))
-
-      // Call hooks
-      PluginRegistry().getRepositoryHooks.foreach(_.renamed(repository.owner, repository.name, form.repositoryName))
     }
-    flash += "info" -> "Repository settings has been updated."
+    flash.update("info", "Repository settings has been updated.")
     redirect(s"/${repository.owner}/${form.repositoryName}/settings/options")
   })
 
@@ -189,10 +166,10 @@ trait RepositorySettingsControllerBase extends ControllerBase {
     } else {
       saveRepositoryDefaultBranch(repository.owner, repository.name, form.defaultBranch)
       // Change repository HEAD
-      using(Git.open(getRepositoryDir(repository.owner, repository.name))) { git =>
+      Using.resource(Git.open(getRepositoryDir(repository.owner, repository.name))) { git =>
         git.getRepository.updateRef(Constants.HEAD, true).link(Constants.R_HEADS + form.defaultBranch)
       }
-      flash += "info" -> "Repository default branch has been updated."
+      flash.update("info", "Repository default branch has been updated.")
       redirect(s"/${repository.owner}/${repository.name}/settings/branches")
     }
   })
@@ -256,7 +233,7 @@ trait RepositorySettingsControllerBase extends ControllerBase {
    */
   post("/:owner/:repository/settings/hooks/new", webHookForm(false))(ownerOnly { (form, repository) =>
     addWebHook(repository.owner, repository.name, form.url, form.events, form.ctype, form.token)
-    flash += "info" -> s"Webhook ${form.url} created"
+    flash.update("info", s"Webhook ${form.url} created")
     redirect(s"/${repository.owner}/${repository.name}/settings/hooks")
   })
 
@@ -265,7 +242,7 @@ trait RepositorySettingsControllerBase extends ControllerBase {
    */
   get("/:owner/:repository/settings/hooks/delete")(ownerOnly { repository =>
     deleteWebHook(repository.owner, repository.name, params("url"))
-    flash += "info" -> s"Webhook ${params("url")} deleted"
+    flash.update("info", s"Webhook ${params("url")} deleted")
     redirect(s"/${repository.owner}/${repository.name}/settings/hooks")
   })
 
@@ -277,11 +254,11 @@ trait RepositorySettingsControllerBase extends ControllerBase {
       Array(h.getName, h.getValue)
     }
 
-    using(Git.open(getRepositoryDir(repository.owner, repository.name))) {
+    Using.resource(Git.open(getRepositoryDir(repository.owner, repository.name))) {
       git =>
-        import scala.collection.JavaConverters._
         import scala.concurrent.duration._
         import scala.concurrent._
+        import scala.jdk.CollectionConverters._
         import scala.util.control.NonFatal
         import org.apache.http.util.EntityUtils
         import scala.concurrent.ExecutionContext.Implicits.global
@@ -323,7 +300,7 @@ trait RepositorySettingsControllerBase extends ControllerBase {
           case e: java.net.UnknownHostException                  => Map("error" -> ("Unknown host " + e.getMessage))
           case e: java.lang.IllegalArgumentException             => Map("error" -> ("invalid url"))
           case e: org.apache.http.client.ClientProtocolException => Map("error" -> ("invalid url"))
-          case NonFatal(e)                                       => Map("error" -> (e.getClass + " " + e.getMessage))
+          case NonFatal(e)                                       => Map("error" -> (s"${e.getClass} ${e.getMessage}"))
         }
 
         contentType = formats("json")
@@ -375,7 +352,7 @@ trait RepositorySettingsControllerBase extends ControllerBase {
    */
   post("/:owner/:repository/settings/hooks/edit", webHookForm(true))(ownerOnly { (form, repository) =>
     updateWebHook(repository.owner, repository.name, form.url, form.events, form.ctype, form.token)
-    flash += "info" -> s"webhook ${form.url} updated"
+    flash.update("info", s"webhook ${form.url} updated")
     redirect(s"/${repository.owner}/${repository.name}/settings/hooks")
   })
 
@@ -392,31 +369,7 @@ trait RepositorySettingsControllerBase extends ControllerBase {
   post("/:owner/:repository/settings/transfer", transferForm)(ownerOnly { (form, repository) =>
     // Change repository owner
     if (repository.owner != form.newOwner) {
-      LockUtil.lock(s"${repository.owner}/${repository.name}") {
-        // Update database
-        renameRepository(repository.owner, repository.name, form.newOwner, repository.name)
-        // Move git repository
-        defining(getRepositoryDir(repository.owner, repository.name)) { dir =>
-          if (dir.isDirectory) {
-            FileUtils.moveDirectory(dir, getRepositoryDir(form.newOwner, repository.name))
-          }
-        }
-        // Move wiki repository
-        defining(getWikiRepositoryDir(repository.owner, repository.name)) { dir =>
-          if (dir.isDirectory) {
-            FileUtils.moveDirectory(dir, getWikiRepositoryDir(form.newOwner, repository.name))
-          }
-        }
-        // Move files directory
-        defining(getRepositoryFilesDir(repository.owner, repository.name)) { dir =>
-          if (dir.isDirectory) {
-            FileUtils.moveDirectory(dir, getRepositoryFilesDir(form.newOwner, repository.name))
-          }
-        }
-
-        // Call hooks
-        PluginRegistry().getRepositoryHooks.foreach(_.transferred(repository.owner, form.newOwner, repository.name))
-      }
+      renameRepository(repository.owner, repository.name, form.newOwner, repository.name)
     }
     redirect(s"/${form.newOwner}/${repository.name}")
   })
@@ -425,19 +378,8 @@ trait RepositorySettingsControllerBase extends ControllerBase {
    * Delete the repository.
    */
   post("/:owner/:repository/settings/delete")(ownerOnly { repository =>
-    LockUtil.lock(s"${repository.owner}/${repository.name}") {
-      // Delete the repository and related files
-      deleteRepository(repository.owner, repository.name)
-
-      FileUtils.deleteDirectory(getRepositoryDir(repository.owner, repository.name))
-      FileUtils.deleteDirectory(getWikiRepositoryDir(repository.owner, repository.name))
-      FileUtils.deleteDirectory(getTemporaryDir(repository.owner, repository.name))
-      FileUtils.deleteDirectory(getRepositoryFilesDir(repository.owner, repository.name))
-
-      // Call hooks
-      PluginRegistry().getRepositoryHooks.foreach(_.deleted(repository.owner, repository.name))
-    }
-
+    // Delete the repository and related files
+    deleteRepository(repository.repository)
     redirect(s"/${repository.owner}")
   })
 
@@ -446,11 +388,11 @@ trait RepositorySettingsControllerBase extends ControllerBase {
    */
   post("/:owner/:repository/settings/gc")(ownerOnly { repository =>
     LockUtil.lock(s"${repository.owner}/${repository.name}") {
-      using(Git.open(getRepositoryDir(repository.owner, repository.name))) { git =>
+      Using.resource(Git.open(getRepositoryDir(repository.owner, repository.name))) { git =>
         git.gc().call()
       }
     }
-    flash += "info" -> "Garbage collection has been executed."
+    flash.update("info", "Garbage collection has been executed.")
     redirect(s"/${repository.owner}/${repository.name}/settings/danger")
   })
 
@@ -572,10 +514,10 @@ trait RepositorySettingsControllerBase extends ControllerBase {
 
   private def mergeOptions = new ValueType[Seq[String]] {
     override def convert(name: String, params: Map[String, Seq[String]], messages: Messages): Seq[String] = {
-      params.get("mergeOptions").getOrElse(Nil)
+      params.getOrElse("mergeOptions", Nil)
     }
     override def validate(name: String, params: Map[String, Seq[String]], messages: Messages): Seq[(String, String)] = {
-      val mergeOptions = params.get("mergeOptions").getOrElse(Nil)
+      val mergeOptions = params.getOrElse("mergeOptions", Nil)
       if (mergeOptions.isEmpty) {
         Seq("mergeOptions" -> "At least one option must be enabled.")
       } else if (!mergeOptions.forall(x => Seq("merge-commit", "squash", "rebase").contains(x))) {

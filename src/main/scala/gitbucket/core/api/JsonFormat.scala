@@ -24,6 +24,7 @@ object JsonFormat {
         }, { case x: Date => JString(OffsetDateTime.ofInstant(x.toInstant, ZoneId.of("UTC")).format(parserISO)) }
     )
   ) + FieldSerializer[ApiUser]() +
+    FieldSerializer[ApiGroup]() +
     FieldSerializer[ApiPullRequest]() +
     FieldSerializer[ApiRepository]() +
     FieldSerializer[ApiCommitListItem.Parent]() +
@@ -42,6 +43,8 @@ object JsonFormat {
     FieldSerializer[ApiCommits.Tree]() +
     FieldSerializer[ApiCommits.Stats]() +
     FieldSerializer[ApiCommits.File]() +
+    FieldSerializer[ApiRelease]() +
+    FieldSerializer[ApiReleaseAsset]() +
     ApiBranchProtection.enforcementLevelSerializer
 
   def apiPathSerializer(c: Context) =

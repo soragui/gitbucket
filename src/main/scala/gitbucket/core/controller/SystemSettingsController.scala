@@ -2,14 +2,11 @@ package gitbucket.core.controller
 
 import java.io.FileInputStream
 
-import com.github.zafarkhaja.semver.{Version => Semver}
-import gitbucket.core.GitBucketCoreModule
 import gitbucket.core.admin.html
-import gitbucket.core.plugin.{PluginInfoBase, PluginRegistry, PluginRepository}
+import gitbucket.core.plugin.PluginRegistry
 import gitbucket.core.service.SystemSettingsService._
 import gitbucket.core.service.{AccountService, RepositoryService}
 import gitbucket.core.ssh.SshServer
-import gitbucket.core.util.Directory._
 import gitbucket.core.util.Implicits._
 import gitbucket.core.util.StringUtil._
 import gitbucket.core.util.SyntaxSugars._
@@ -21,8 +18,8 @@ import org.scalatra._
 import org.scalatra.forms._
 import org.scalatra.i18n.Messages
 
-import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
+import scala.util.Using
 
 class SystemSettingsController
     extends SystemSettingsControllerBase
@@ -93,17 +90,17 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
       )(OIDC.apply)
     ),
     "skinName" -> trim(label("AdminLTE skin name", text(required))),
-    "showMailAddress" -> trim(label("Show mail address", boolean())),
-    "pluginNetworkInstall" -> trim(label("Network plugin installation", boolean())),
-    "proxy" -> optionalIfNotChecked(
-      "useProxy",
-      mapping(
-        "host" -> trim(label("Proxy host", text(required))),
-        "port" -> trim(label("Proxy port", number())),
-        "user" -> trim(label("Keystore", optional(text()))),
-        "password" -> trim(label("Keystore", optional(text())))
-      )(Proxy.apply)
-    )
+    "showMailAddress" -> trim(label("Show mail address", boolean())) //,
+//    "pluginNetworkInstall" -> trim(label("Network plugin installation", boolean())),
+//    "proxy" -> optionalIfNotChecked(
+//      "useProxy",
+//      mapping(
+//        "host" -> trim(label("Proxy host", text(required))),
+//        "port" -> trim(label("Proxy port", number())),
+//        "user" -> trim(label("Keystore", optional(text()))),
+//        "password" -> trim(label("Keystore", optional(text())))
+//      )(Proxy.apply)
+//    )
   )(SystemSettings.apply).verifying { settings =>
     Vector(
       if (settings.ssh.enabled && settings.baseUrl.isEmpty) {
@@ -229,30 +226,30 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
     val conn = request2Session(request).conn
     val meta = conn.getMetaData
     val tables = ListBuffer[Table]()
-    using(meta.getTables(null, "%", "%", Array("TABLE", "VIEW"))) {
+    Using.resource(meta.getTables(null, "%", "%", Array("TABLE", "VIEW"))) {
       rs =>
         while (rs.next()) {
           val tableName = rs.getString("TABLE_NAME")
 
           val pkColumns = ListBuffer[String]()
-          using(meta.getPrimaryKeys(null, null, tableName)) { rs =>
+          Using.resource(meta.getPrimaryKeys(null, null, tableName)) { rs =>
             while (rs.next()) {
               pkColumns += rs.getString("COLUMN_NAME").toUpperCase
             }
           }
 
           val columns = ListBuffer[Column]()
-          using(meta.getColumns(null, "%", tableName, "%")) { rs =>
+          Using.resource(meta.getColumns(null, "%", tableName, "%")) { rs =>
             while (rs.next()) {
               val columnName = rs.getString("COLUMN_NAME").toUpperCase
               columns += Column(columnName, pkColumns.contains(columnName))
             }
           }
 
-          tables += Table(tableName.toUpperCase, columns)
+          tables += Table(tableName.toUpperCase, columns.toSeq)
         }
     }
-    html.dbviewer(tables)
+    html.dbviewer(tables.toSeq)
   })
 
   post("/admin/dbviewer/_query")(adminOnly {
@@ -263,10 +260,10 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
         if (trimmedQuery.nonEmpty) {
           try {
             val conn = request2Session(request).conn
-            using(conn.prepareStatement(query)) {
+            Using.resource(conn.prepareStatement(query)) {
               stmt =>
                 if (trimmedQuery.toUpperCase.startsWith("SELECT")) {
-                  using(stmt.executeQuery()) {
+                  Using.resource(stmt.executeQuery()) {
                     rs =>
                       val meta = rs.getMetaData
                       val columns = for (i <- 1 to meta.getColumnCount) yield {
@@ -309,7 +306,7 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
       } SshServer.start(sshAddress, baseUrl)
     }
 
-    flash += "info" -> "System settings has been updated."
+    flash.update("info", "System settings has been updated.")
     redirect("/admin/system")
   })
 
@@ -332,63 +329,12 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
   })
 
   get("/admin/plugins")(adminOnly {
-    // Installed plugins
-    val enabledPlugins = PluginRegistry().getPlugins()
-    val gitbucketVersion = GitBucketCoreModule.getVersions.asScala.last.getVersion
-    val gitbucketSemver = Semver.valueOf(gitbucketVersion)
-
-    // Plugins in the remote repository
-    val repositoryPlugins = if (context.settings.pluginNetworkInstall) {
-      PluginRepository
-        .getPlugins()
-        .map {
-          meta =>
-            (meta, meta.versions.reverse.find {
-              version =>
-                val semver = Semver.valueOf(version.version)
-                gitbucketVersion == version.gitbucketVersion && !enabledPlugins.exists { plugin =>
-                  if (plugin.pluginId == meta.id) {
-                    Semver.valueOf(plugin.pluginVersion) match {
-                      case x if x.greaterThan(semver) => true
-                      case x if x.equals(semver) =>
-                        plugin.gitbucketVersion match {
-                          case None    => true
-                          case Some(x) => Semver.valueOf(x).greaterThanOrEqualTo(gitbucketSemver)
-                        }
-                      case _ => false
-                    }
-                  } else false
-                }
-            })
-        }
-        .collect {
-          case (meta, Some(version)) =>
-            new PluginInfoBase(
-              pluginId = meta.id,
-              pluginName = meta.name,
-              pluginVersion = version.version,
-              gitbucketVersion = Some(version.gitbucketVersion),
-              description = meta.description
-            )
-        }
-    } else Nil
-
-    // Merge
-    val plugins = (enabledPlugins.map((_, true)) ++ repositoryPlugins.map((_, false)))
-      .groupBy(_._1.pluginId)
-      .map {
-        case (pluginId, plugins) =>
-          val (plugin, enabled) = plugins.head
-          (plugin, enabled, if (plugins.length > 1) plugins.last._1.pluginVersion else "")
-      }
-      .toList
-
-    html.plugins(plugins, flash.get("info"))
+    html.plugins(PluginRegistry().getPlugins(), flash.get("info"))
   })
 
   post("/admin/plugins/_reload")(adminOnly {
     PluginRegistry.reload(request.getServletContext(), loadSystemSettings(), request2Session(request).conn)
-    flash += "info" -> "All plugins were reloaded."
+    flash.update("info", "All plugins were reloaded.")
     redirect("/admin/plugins")
   })
 
@@ -398,37 +344,7 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
     if (PluginRegistry().getPlugins().exists(_.pluginId == pluginId)) {
       PluginRegistry
         .uninstall(pluginId, request.getServletContext, loadSystemSettings(), request2Session(request).conn)
-      flash += "info" -> s"${pluginId} was uninstalled."
-    }
-
-    redirect("/admin/plugins")
-  })
-
-  post("/admin/plugins/:pluginId/:version/_install")(adminOnly {
-    if (context.settings.pluginNetworkInstall) {
-      val pluginId = params("pluginId")
-      val version = params("version")
-      val gitbucketVersion = GitBucketCoreModule.getVersions.asScala.last.getVersion
-
-      PluginRepository
-        .getPlugins()
-        .collectFirst {
-          case meta if meta.id == pluginId =>
-            (meta, meta.versions.find(x => x.gitbucketVersion == gitbucketVersion && x.version == version))
-        }
-        .foreach {
-          case (meta, version) =>
-            version.foreach { version =>
-              PluginRegistry.install(
-                pluginId,
-                new java.net.URL(version.url),
-                request.getServletContext,
-                loadSystemSettings(),
-                request2Session(request).conn
-              )
-              flash += "info" -> s"${pluginId}:${version.version} was installed."
-            }
-        }
+      flash.update("info", s"${pluginId} was uninstalled.")
     }
 
     redirect("/admin/plugins")
@@ -476,7 +392,7 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
     getAccountByUserName(userName, true).map {
       account =>
         if (account.isAdmin && (form.isRemoved || !form.isAdmin) && isLastAdministrator(account)) {
-          flash += "error" -> "Account can't be turned off because this is last one administrator."
+          flash.update("error", "Account can't be turned off because this is last one administrator.")
           redirect(s"/admin/users/${userName}/_edituser")
         } else {
           if (form.isRemoved) {
@@ -601,7 +517,7 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
     response.setHeader("Content-Disposition", "attachment; filename=" + file.getName)
     response.setContentLength(file.length.toInt)
 
-    using(new FileInputStream(file)) { in =>
+    Using.resource(new FileInputStream(file)) { in =>
       IOUtils.copy(in, response.outputStream)
     }
 

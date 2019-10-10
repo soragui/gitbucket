@@ -11,6 +11,7 @@ object SyntaxSugars {
 
   def defining[A, B](value: A)(f: A => B): B = f(value)
 
+  @deprecated("Use scala.util.Using.resource instead", "4.32.0")
   def using[A <: { def close(): Unit }, B](resource: A)(f: A => B): B =
     try f(resource)
     finally {
@@ -21,6 +22,7 @@ object SyntaxSugars {
       }
     }
 
+  @deprecated("Use scala.util.Using.resources instead", "4.32.0")
   def using[A <: { def close(): Unit }, B <: { def close(): Unit }, C](resource1: A, resource2: B)(f: (A, B) => C): C =
     try f(resource1, resource2)
     finally {
@@ -36,10 +38,12 @@ object SyntaxSugars {
       }
     }
 
+  @deprecated("Use scala.util.Using.resource instead", "4.32.0")
   def using[T](git: Git)(f: Git => T): T =
     try f(git)
     finally git.getRepository.close()
 
+  @deprecated("Use scala.util.Using.resources instead", "4.32.0")
   def using[T](git1: Git, git2: Git)(f: (Git, Git) => T): T =
     try f(git1, git2)
     finally {
@@ -65,7 +69,7 @@ object SyntaxSugars {
   implicit class HeadValueAccessibleMap(map: Map[String, Seq[String]]) {
     def value(key: String): String = map(key).head
     def optionValue(key: String): Option[String] = map.get(key).flatMap(_.headOption)
-    def values(key: String): Seq[String] = map.get(key).getOrElse(Seq.empty)
+    def values(key: String): Seq[String] = map.getOrElse(key, Seq.empty)
   }
 
 }

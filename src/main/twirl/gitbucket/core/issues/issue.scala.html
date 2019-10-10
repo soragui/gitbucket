@@ -65,6 +65,7 @@ $(function(){
   $('#edit').click(function(){
     $('.edit-title').show();
     $('.show-title').hide();
+    $('#edit-title').focus();
     return false;
   });
 
@@ -79,9 +80,9 @@ $(function(){
     }).done(function(data){
       $('#show-title').empty().text(data.title);
       $('#cancel').click();
-      $(this).removeAttr('disabled');
+      $('#update').removeAttr('disabled');
     }).fail(function(req){
-      $(this).removeAttr('disabled');
+      $('#update').removeAttr('disabled');
       $('#error-edit-title').text($.parseJSON(req.responseText).title);
     });
     return false;

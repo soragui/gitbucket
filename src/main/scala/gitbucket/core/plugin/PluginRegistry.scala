@@ -1,6 +1,6 @@
 package gitbucket.core.plugin
 
-import java.io.{File, FilenameFilter, InputStream}
+import java.io.{File, FilenameFilter}
 import java.net.URLClassLoader
 import java.nio.file.{Files, Paths, StandardWatchEventKinds}
 import java.util.Base64
@@ -15,26 +15,24 @@ import gitbucket.core.service.ProtectedBranchService.ProtectedBranchReceiveHook
 import gitbucket.core.service.RepositoryService.RepositoryInfo
 import gitbucket.core.service.SystemSettingsService
 import gitbucket.core.service.SystemSettingsService.SystemSettings
-import gitbucket.core.util.SyntaxSugars._
 import gitbucket.core.util.DatabaseConfig
 import gitbucket.core.util.Directory._
-import gitbucket.core.util.HttpClientUtil._
 import io.github.gitbucket.solidbase.Solidbase
 import io.github.gitbucket.solidbase.manager.JDBCVersionManager
 import io.github.gitbucket.solidbase.model.Module
 import org.apache.commons.io.FileUtils
-import org.apache.http.client.methods.HttpGet
-import org.apache.sshd.server.Command
+import org.apache.sshd.server.command.Command
 import org.slf4j.LoggerFactory
 import play.twirl.api.Html
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 class PluginRegistry {
 
   private val plugins = new ConcurrentLinkedQueue[PluginInfo]
   private val javaScripts = new ConcurrentLinkedQueue[(String, String)]
   private val controllers = new ConcurrentLinkedQueue[(ControllerBase, String)]
+  private val anonymousAccessiblePaths = new ConcurrentLinkedQueue[String]
   private val images = new ConcurrentHashMap[String, String]
   private val renderers = new ConcurrentHashMap[String, Renderer]
   renderers.put("md", MarkdownRenderer)
@@ -70,24 +68,15 @@ class PluginRegistry {
     images.put(id, encoded)
   }
 
-  @deprecated("Use addImage(id: String, bytes: Array[Byte]) instead", "3.4.0")
-  def addImage(id: String, in: InputStream): Unit = {
-    val bytes = using(in) { in =>
-      val bytes = new Array[Byte](in.available)
-      in.read(bytes)
-      bytes
-    }
-    addImage(id, bytes)
-  }
-
   def getImage(id: String): String = images.get(id)
 
   def addController(path: String, controller: ControllerBase): Unit = controllers.add((controller, path))
 
-  @deprecated("Use addController(path: String, controller: ControllerBase) instead", "3.4.0")
-  def addController(controller: ControllerBase, path: String): Unit = addController(path, controller)
-
   def getControllers(): Seq[(ControllerBase, String)] = controllers.asScala.toSeq
+
+  def addAnonymousAccessiblePath(path: String): Unit = anonymousAccessiblePaths.add(path)
+
+  def getAnonymousAccessiblePaths(): Seq[String] = anonymousAccessiblePaths.asScala.toSeq
 
   def addJavaScript(path: String, script: String): Unit =
     javaScripts.add((path, script)) //javaScripts += ((path, script))
@@ -236,40 +225,6 @@ object PluginRegistry {
       initialize(context, settings, conn)
     }
 
-  /**
-   * Install a plugin from a specified jar file.
-   */
-  def install(
-    pluginId: String,
-    url: java.net.URL,
-    context: ServletContext,
-    settings: SystemSettings,
-    conn: java.sql.Connection
-  ): Unit =
-    synchronized {
-      shutdown(context, settings)
-
-      new File(PluginHome)
-        .listFiles((_: File, name: String) => {
-          name.startsWith(s"gitbucket-${pluginId}-plugin") && name.endsWith(".jar")
-        })
-        .foreach(_.delete())
-
-      withHttpClient(settings.pluginProxy) { httpClient =>
-        val httpGet = new HttpGet(url.toString)
-        try {
-          val response = httpClient.execute(httpGet)
-          val in = response.getEntity.getContent
-          FileUtils.copyToFile(in, new File(PluginHome, new File(url.getFile).getName))
-        } finally {
-          httpGet.releaseConnection()
-        }
-      }
-
-      instance = new PluginRegistry()
-      initialize(context, settings, conn)
-    }
-
   private def listPluginJars(dir: File): Seq[File] = {
     dir
       .listFiles(new FilenameFilter {
@@ -340,6 +295,7 @@ object PluginRegistry {
         instance.getPlugins().find(_.pluginId == pluginId) match {
           case Some(x) => {
             logger.warn(s"Plugin ${pluginId} is duplicated. ${x.pluginJar.getName} is available.")
+            classLoader.close()
           }
           case None => {
             // Migration
@@ -379,7 +335,9 @@ object PluginRegistry {
           }
         }
       } catch {
-        case e: Throwable => logger.error(s"Error during plugin initialization: ${pluginJar.getName}", e)
+        case e: Throwable =>
+          logger.error(s"Error during plugin initialization: ${pluginJar.getName}", e)
+          classLoader.close()
       }
     }
 
@@ -418,6 +376,13 @@ object PluginRegistry {
     }
   }
 
+  def getPluginInfoFromClassLoader(classLoader: ClassLoader): Option[PluginInfo] = {
+    instance
+      .getPlugins()
+      .find { info =>
+        info.classLoader.equals(classLoader)
+      }
+  }
 }
 
 case class Link(
@@ -448,7 +413,6 @@ case class PluginInfo(
 
 class PluginWatchThread(context: ServletContext, dir: String) extends Thread with SystemSettingsService {
   import gitbucket.core.model.Profile.profile.blockingApi._
-  import scala.collection.JavaConverters._
 
   private val logger = LoggerFactory.getLogger(classOf[PluginWatchThread])
 
@@ -478,7 +442,7 @@ class PluginWatchThread(context: ServletContext, dir: String) extends Thread wit
         }
         if (events.nonEmpty) {
           events.foreach { event =>
-            logger.info(event.kind + ": " + event.context)
+            logger.info(s"${event.kind}: ${event.context}")
           }
           new Thread {
             override def run(): Unit = {

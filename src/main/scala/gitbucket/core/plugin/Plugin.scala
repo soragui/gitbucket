@@ -6,10 +6,10 @@ import gitbucket.core.controller.{Context, ControllerBase}
 import gitbucket.core.model.{Account, Issue}
 import gitbucket.core.service.RepositoryService.RepositoryInfo
 import gitbucket.core.service.SystemSettingsService.SystemSettings
-import gitbucket.core.util.SyntaxSugars._
 import io.github.gitbucket.solidbase.model.Version
-import org.apache.sshd.server.Command
+import org.apache.sshd.server.command.Command
 import play.twirl.api.Html
+import scala.util.Using
 
 /**
  * Trait for define plugin interface.
@@ -46,6 +46,20 @@ abstract class Plugin {
     context: ServletContext,
     settings: SystemSettings
   ): Seq[(String, ControllerBase)] = Nil
+
+  /**
+   * Override to declare this plug-in provides anonymous accessible paths.
+   */
+  val anonymousAccessiblePaths: Seq[String] = Nil
+
+  /**
+   * Override to declare this plug-in provides anonymous accessible paths.
+   */
+  def anonymousAccessiblePaths(
+    registry: PluginRegistry,
+    context: ServletContext,
+    settings: SystemSettings
+  ): Seq[String] = Nil
 
   /**
    * Override to declare this plug-in provides JavaScript.
@@ -333,6 +347,10 @@ abstract class Plugin {
       case (path, controller) =>
         registry.addController(path, controller)
     }
+    (anonymousAccessiblePaths ++ anonymousAccessiblePaths(registry, context, settings)).foreach {
+      case (path) =>
+        registry.addAnonymousAccessiblePath(path)
+    }
     (javaScripts ++ javaScripts(registry, context, settings)).foreach {
       case (path, script) =>
         registry.addJavaScript(path, script)
@@ -416,7 +434,7 @@ abstract class Plugin {
    * Helper method to get a resource from classpath.
    */
   protected def fromClassPath(path: String): Array[Byte] =
-    using(getClass.getClassLoader.getResourceAsStream(path)) { in =>
+    Using.resource(getClass.getClassLoader.getResourceAsStream(path)) { in =>
       val bytes = new Array[Byte](in.available)
       in.read(bytes)
       bytes

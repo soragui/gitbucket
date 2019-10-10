@@ -7,6 +7,7 @@ import gitbucket.core.model.Profile.profile.blockingApi._
 import gitbucket.core.model.Profile.dateColumnType
 import gitbucket.core.util.{LDAPUtil, StringUtil}
 import StringUtil._
+import gitbucket.core.plugin.PluginRegistry
 import gitbucket.core.service.SystemSettingsService.SystemSettings
 
 trait AccountService {
@@ -163,8 +164,8 @@ trait AccountService {
     isAdmin: Boolean,
     description: Option[String],
     url: Option[String]
-  )(implicit s: Session): Unit =
-    Accounts insert Account(
+  )(implicit s: Session): Account = {
+    val account = Account(
       userName = userName,
       password = password,
       fullName = fullName,
@@ -179,6 +180,18 @@ trait AccountService {
       isRemoved = false,
       description = description
     )
+    Accounts insert account
+    account
+  }
+
+  def suspendAccount(account: Account)(implicit s: Session): Unit = {
+    // Remove from GROUP_MEMBER and COLLABORATOR
+    removeUserRelatedData(account.userName)
+    updateAccount(account.copy(isRemoved = true))
+
+    // call hooks
+    PluginRegistry().getAccountHooks.foreach(_.deleted(account.userName))
+  }
 
   def updateAccount(account: Account)(implicit s: Session): Unit =
     Accounts
@@ -227,8 +240,8 @@ trait AccountService {
   def updateLastLoginDate(userName: String)(implicit s: Session): Unit =
     Accounts.filter(_.userName === userName.bind).map(_.lastLoginDate).update(currentDate)
 
-  def createGroup(groupName: String, description: Option[String], url: Option[String])(implicit s: Session): Unit =
-    Accounts insert Account(
+  def createGroup(groupName: String, description: Option[String], url: Option[String])(implicit s: Session): Account = {
+    val group = Account(
       userName = groupName,
       password = "",
       fullName = groupName,
@@ -243,6 +256,9 @@ trait AccountService {
       isRemoved = false,
       description = description
     )
+    Accounts insert group
+    group
+  }
 
   def updateGroup(groupName: String, description: Option[String], url: Option[String], removed: Boolean)(
     implicit s: Session
@@ -276,6 +292,15 @@ trait AccountService {
   def removeUserRelatedData(userName: String)(implicit s: Session): Unit = {
     GroupMembers.filter(_.userName === userName.bind).delete
     Collaborators.filter(_.collaboratorName === userName.bind).delete
+  }
+
+  def removeUser(account: Account)(implicit s: Session): Unit = {
+    // Remove from GROUP_MEMBER and COLLABORATOR
+    removeUserRelatedData(account.userName)
+    updateAccount(account.copy(isRemoved = true))
+
+    // call hooks
+    PluginRegistry().getAccountHooks.foreach(_.deleted(account.userName))
   }
 
   def getGroupNames(userName: String)(implicit s: Session): List[String] = {

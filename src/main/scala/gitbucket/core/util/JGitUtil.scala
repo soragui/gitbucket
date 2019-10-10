@@ -1,6 +1,6 @@
 package gitbucket.core.util
 
-import java.io.{ByteArrayOutputStream, File, FileInputStream, InputStream}
+import java.io._
 
 import gitbucket.core.service.RepositoryService
 import org.eclipse.jgit.api.Git
@@ -9,7 +9,8 @@ import StringUtil._
 import SyntaxSugars._
 
 import scala.annotation.tailrec
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
+import scala.util.Using
 import org.eclipse.jgit.lib._
 import org.eclipse.jgit.revwalk._
 import org.eclipse.jgit.revwalk.filter._
@@ -20,7 +21,6 @@ import org.eclipse.jgit.errors.{ConfigInvalidException, IncorrectObjectTypeExcep
 import org.eclipse.jgit.transport.RefSpec
 import java.util.Date
 import java.util.concurrent.TimeUnit
-import java.util.function.Consumer
 
 import org.cache2k.Cache2kBuilder
 import org.eclipse.jgit.api.errors._
@@ -29,12 +29,18 @@ import org.eclipse.jgit.dircache.DirCacheEntry
 import org.eclipse.jgit.util.io.DisabledOutputStream
 import org.slf4j.LoggerFactory
 
+import scala.util.Using.Releasable
+
 /**
  * Provides complex JGit operations.
  */
 object JGitUtil {
 
   private val logger = LoggerFactory.getLogger(JGitUtil.getClass)
+
+  implicit val objectDatabaseReleasable = new Releasable[ObjectDatabase] {
+    override def release(resource: ObjectDatabase): Unit = resource.close()
+  }
 
   /**
    * The repository data.
@@ -76,6 +82,59 @@ object JGitUtil {
   )
 
   /**
+   * The gpg commit sign data.
+   * @param signArmored signature for commit
+   * @param target string for verification target
+   */
+  case class GpgSignInfo(signArmored: Array[Byte], target: Array[Byte])
+
+  /**
+   * The verified gpg sign data.
+   * @param signedUser
+   * @param signedKeyId
+   */
+  case class GpgVerifyInfo(signedUser: String, signedKeyId: String)
+
+  private def getSignTarget(rev: RevCommit): Array[Byte] = {
+    val ascii = "ASCII"
+    val os = new ByteArrayOutputStream()
+    val w = new OutputStreamWriter(os, rev.getEncoding)
+    os.write("tree ".getBytes(ascii))
+    rev.getTree.copyTo(os)
+    os.write('\n')
+
+    rev.getParents.foreach { p =>
+      os.write("parent ".getBytes(ascii))
+      p.copyTo(os)
+      os.write('\n')
+    }
+
+    os.write("author ".getBytes(ascii))
+    w.write(rev.getAuthorIdent.toExternalString)
+    w.flush()
+    os.write('\n')
+
+    os.write("committer ".getBytes(ascii))
+    w.write(rev.getCommitterIdent.toExternalString)
+    w.flush()
+    os.write('\n')
+
+    if (rev.getEncoding.name != "UTF-8") {
+      os.write("encoding ".getBytes(ascii))
+      os.write(Constants.encodeASCII(rev.getEncoding.name))
+      os.write('\n')
+    }
+
+    os.write('\n')
+
+    if (!rev.getFullMessage.isEmpty) {
+      w.write(rev.getFullMessage)
+      w.flush()
+    }
+    os.toByteArray
+  }
+
+  /**
    * The commit data.
    *
    * @param id the commit id
@@ -99,7 +158,9 @@ object JGitUtil {
     authorEmailAddress: String,
     commitTime: Date,
     committerName: String,
-    committerEmailAddress: String
+    committerEmailAddress: String,
+    commitSign: Option[GpgSignInfo],
+    verified: Option[GpgVerifyInfo]
   ) {
 
     def this(rev: org.eclipse.jgit.revwalk.RevCommit) =
@@ -113,7 +174,11 @@ object JGitUtil {
         rev.getAuthorIdent.getEmailAddress,
         rev.getCommitterIdent.getWhen,
         rev.getCommitterIdent.getName,
-        rev.getCommitterIdent.getEmailAddress
+        rev.getCommitterIdent.getEmailAddress,
+        Option(rev.getRawGpgSignature).map { s =>
+          GpgSignInfo(s, getSignTarget(rev))
+        },
+        None
       )
 
     val summary = getSummaryMessage(fullMessage, shortMessage)
@@ -240,18 +305,16 @@ object JGitUtil {
    * Returns the number of commits in the specified branch or commit.
    * If the specified branch has over 10000 commits, this method returns 100001.
    */
-  def getCommitCount(owner: String, repository: String, branch: String): Int = {
-    val dir = getRepositoryDir(owner, repository)
+  def getCommitCount(git: Git, branch: String, max: Int = 10001): Int = {
+    val dir = git.getRepository.getDirectory
     val key = dir.getAbsolutePath + "@" + branch
     val entry = cache.getEntry(key)
 
     if (entry == null) {
-      using(Git.open(dir)) { git =>
-        val commitId = git.getRepository.resolve(branch)
-        val commitCount = git.log.add(commitId).call.iterator.asScala.take(10001).size
-        cache.put(key, commitCount)
-        commitCount
-      }
+      val commitId = git.getRepository.resolve(branch)
+      val commitCount = git.log.add(commitId).call.iterator.asScala.take(max).size
+      cache.put(key, commitCount)
+      commitCount
     } else {
       entry.getValue
     }
@@ -261,7 +324,7 @@ object JGitUtil {
    * Returns the repository information. It contains branch names and tag names.
    */
   def getRepositoryInfo(owner: String, repository: String): RepositoryInfo = {
-    using(Git.open(getRepositoryDir(owner, repository))) { git =>
+    Using.resource(Git.open(getRepositoryDir(owner, repository))) { git =>
       try {
         RepositoryInfo(
           owner,
@@ -308,7 +371,7 @@ object JGitUtil {
    * @return HTML of the file list
    */
   def getFileList(git: Git, revision: String, path: String = ".", baseUrl: Option[String] = None): List[FileInfo] = {
-    using(new RevWalk(git.getRepository)) { revWalk =>
+    Using.resource(new RevWalk(git.getRepository)) { revWalk =>
       val objectId = git.getRepository.resolve(revision)
       if (objectId == null) return Nil
       val revCommit = revWalk.parseCommit(objectId)
@@ -317,12 +380,12 @@ object JGitUtil {
         if (path == ".") {
           val treeWalk = new TreeWalk(git.getRepository)
           treeWalk.addTree(rev.getTree)
-          using(treeWalk)(f)
+          Using.resource(treeWalk)(f)
         } else {
           val treeWalk = TreeWalk.forPath(git.getRepository, path, rev.getTree)
           if (treeWalk != null) {
             treeWalk.enterSubtree
-            using(treeWalk)(f)
+            Using.resource(treeWalk)(f)
           }
         }
       @tailrec
@@ -330,7 +393,7 @@ object JGitUtil {
         tuple: (ObjectId, FileMode, String, String, Option[String], RevCommit)
       ): (ObjectId, FileMode, String, String, Option[String], RevCommit) = tuple match {
         case (oid, FileMode.TREE, name, path, _, commit) =>
-          (using(new TreeWalk(git.getRepository)) { walk =>
+          (Using.resource(new TreeWalk(git.getRepository)) { walk =>
             walk.addTree(oid)
             // single tree child, or None
             if (walk.next() && walk.getFileMode(0) == FileMode.TREE) {
@@ -464,7 +527,7 @@ object JGitUtil {
    * get all file list by revision. only file.
    */
   def getTreeId(git: Git, revision: String): Option[String] = {
-    using(new RevWalk(git.getRepository)) { revWalk =>
+    Using.resource(new RevWalk(git.getRepository)) { revWalk =>
       val objectId = git.getRepository.resolve(revision)
       if (objectId == null) return None
       val revCommit = revWalk.parseCommit(objectId)
@@ -476,10 +539,10 @@ object JGitUtil {
    * get all file list by tree object id.
    */
   def getAllFileListByTreeId(git: Git, treeId: String): List[String] = {
-    using(new RevWalk(git.getRepository)) { revWalk =>
+    Using.resource(new RevWalk(git.getRepository)) { revWalk =>
       val objectId = git.getRepository.resolve(treeId + "^{tree}")
       if (objectId == null) return Nil
-      using(new TreeWalk(git.getRepository)) { treeWalk =>
+      Using.resource(new TreeWalk(git.getRepository)) { treeWalk =>
         treeWalk.addTree(objectId)
         treeWalk.setRecursive(true)
         var ret: List[String] = Nil
@@ -530,7 +593,7 @@ object JGitUtil {
         case _ => (logs, i.hasNext)
       }
 
-    using(new RevWalk(git.getRepository)) { revWalk =>
+    Using.resource(new RevWalk(git.getRepository)) { revWalk =>
       defining(git.getRepository.resolve(revision)) { objectId =>
         if (objectId == null) {
           Left(s"${revision} can't be resolved.")
@@ -562,7 +625,7 @@ object JGitUtil {
         case false => logs
       }
 
-    using(new RevWalk(git.getRepository)) { revWalk =>
+    Using.resource(new RevWalk(git.getRepository)) { revWalk =>
       revWalk.markStart(revWalk.parseCommit(git.getRepository.resolve(begin)))
       getCommitLog(revWalk.iterator, Nil).reverse
     }
@@ -613,17 +676,21 @@ object JGitUtil {
     df.setRepository(git.getRepository)
     df.setDiffComparator(RawTextComparator.DEFAULT)
     df.setDetectRenames(true)
-    df.format(getDiffEntries(git, from, to).head)
-    new String(out.toByteArray, "UTF-8")
+    getDiffEntries(git, from, to)
+      .map { entry =>
+        df.format(entry)
+        new String(out.toByteArray, "UTF-8")
+      }
+      .mkString("\n")
   }
 
   private def getDiffEntries(git: Git, from: Option[String], to: String): Seq[DiffEntry] = {
-    using(new RevWalk(git.getRepository)) { revWalk =>
+    Using.resource(new RevWalk(git.getRepository)) { revWalk =>
       val df = new DiffFormatter(DisabledOutputStream.INSTANCE)
       df.setRepository(git.getRepository)
 
       val toCommit = revWalk.parseCommit(git.getRepository.resolve(to))
-      from match {
+      (from match {
         case None => {
           toCommit.getParentCount match {
             case 0 =>
@@ -639,12 +706,12 @@ object JGitUtil {
           val fromCommit = revWalk.parseCommit(git.getRepository.resolve(from))
           df.scan(fromCommit.getTree, toCommit.getTree).asScala
         }
-      }
+      }).toSeq
     }
   }
 
   def getParentCommitId(git: Git, id: String): Option[String] = {
-    using(new RevWalk(git.getRepository)) { revWalk =>
+    Using.resource(new RevWalk(git.getRepository)) { revWalk =>
       val commit = revWalk.parseCommit(git.getRepository.resolve(id))
       commit.getParentCount match {
         case 0 => None
@@ -726,7 +793,7 @@ object JGitUtil {
 
   private def makePatchFromDiffEntry(git: Git, diff: DiffEntry): String = {
     val out = new ByteArrayOutputStream()
-    using(new DiffFormatter(out)) { formatter =>
+    Using.resource(new DiffFormatter(out)) { formatter =>
       formatter.setRepository(git.getRepository)
       formatter.format(diff)
       val patch = new String(out.toByteArray) // TODO charset???
@@ -738,17 +805,19 @@ object JGitUtil {
    * Returns the list of branch names of the specified commit.
    */
   def getBranchesOfCommit(git: Git, commitId: String): List[String] =
-    using(new RevWalk(git.getRepository)) { revWalk =>
+    Using.resource(new RevWalk(git.getRepository)) { revWalk =>
       defining(revWalk.parseCommit(git.getRepository.resolve(commitId + "^0"))) { commit =>
-        git.getRepository.getAllRefs.entrySet.asScala
+        git.getRepository.getRefDatabase
+          .getRefsByPrefix(Constants.R_HEADS)
+          .asScala
           .filter { e =>
-            (e.getKey.startsWith(Constants.R_HEADS) && revWalk.isMergedInto(
+            (revWalk.isMergedInto(
               commit,
-              revWalk.parseCommit(e.getValue.getObjectId)
+              revWalk.parseCommit(e.getObjectId)
             ))
           }
           .map { e =>
-            e.getValue.getName.substring(org.eclipse.jgit.lib.Constants.R_HEADS.length)
+            e.getName.substring(Constants.R_HEADS.length)
           }
           .toList
           .sorted
@@ -779,17 +848,19 @@ object JGitUtil {
    * Returns the list of tags which contains the specified commit.
    */
   def getTagsOfCommit(git: Git, commitId: String): List[String] =
-    using(new RevWalk(git.getRepository)) { revWalk =>
+    Using.resource(new RevWalk(git.getRepository)) { revWalk =>
       defining(revWalk.parseCommit(git.getRepository.resolve(commitId + "^0"))) { commit =>
-        git.getRepository.getAllRefs.entrySet.asScala
+        git.getRepository.getRefDatabase
+          .getRefsByPrefix(Constants.R_TAGS)
+          .asScala
           .filter { e =>
-            (e.getKey.startsWith(Constants.R_TAGS) && revWalk.isMergedInto(
+            (revWalk.isMergedInto(
               commit,
-              revWalk.parseCommit(e.getValue.getObjectId)
+              revWalk.parseCommit(e.getObjectId)
             ))
           }
           .map { e =>
-            e.getValue.getName.substring(org.eclipse.jgit.lib.Constants.R_TAGS.length)
+            e.getName.substring(Constants.R_TAGS.length)
           }
           .toList
           .sorted
@@ -798,13 +869,13 @@ object JGitUtil {
     }
 
   def initRepository(dir: java.io.File): Unit =
-    using(new RepositoryBuilder().setGitDir(dir).setBare.build) { repository =>
+    Using.resource(new RepositoryBuilder().setGitDir(dir).setBare.build) { repository =>
       repository.create(true)
       setReceivePack(repository)
     }
 
   def cloneRepository(from: java.io.File, to: java.io.File): Unit =
-    using(Git.cloneRepository.setURI(from.toURI.toString).setDirectory(to).setBare(true).call) { git =>
+    Using.resource(Git.cloneRepository.setURI(from.toURI.toString).setDirectory(to).setBare(true).call) { git =>
       setReceivePack(git.getRepository)
     }
 
@@ -834,7 +905,7 @@ object JGitUtil {
   def createTag(git: Git, name: String, message: Option[String], commitId: String) = {
     try {
       val objectId: ObjectId = git.getRepository.resolve(commitId)
-      using(new RevWalk(git.getRepository)) { walk =>
+      Using.resource(new RevWalk(git.getRepository)) { walk =>
         val tagCommand = git.tag().setName(name).setObjectId(walk.parseCommit(objectId))
         message.foreach { message =>
           tagCommand.setMessage(message)
@@ -843,10 +914,10 @@ object JGitUtil {
       }
       Right("Tag added.")
     } catch {
-      case e: GitAPIException              => Left("Sorry, some Git operation error occurs.")
-      case e: ConcurrentRefUpdateException => Left("Sorry some error occurs.")
+      case e: ConcurrentRefUpdateException => Left("Sorry, some error occurs.")
       case e: InvalidTagNameException      => Left("Sorry, that name is invalid.")
       case e: NoHeadException              => Left("Sorry, this repo doesn't have HEAD reference")
+      case e: GitAPIException              => Left("Sorry, some Git operation error occurs.")
     }
   }
 
@@ -939,7 +1010,7 @@ object JGitUtil {
       case false                                => None
     }
 
-    using(new TreeWalk(git.getRepository)) { treeWalk =>
+    Using.resource(new TreeWalk(git.getRepository)) { treeWalk =>
       treeWalk.addTree(revTree)
       treeWalk.setRecursive(true)
       getPathObjectId(path, treeWalk)
@@ -984,7 +1055,7 @@ object JGitUtil {
 
   def getContentInfo(git: Git, path: String, objectId: ObjectId): ContentInfo = {
     // Viewer
-    using(git.getRepository.getObjectDatabase) { db =>
+    Using.resource(git.getRepository.getObjectDatabase) { db =>
       val loader = db.open(objectId)
       val isLfs = isLfsPointer(loader)
       val large = FileUtil.isLarge(loader.getSize)
@@ -1022,7 +1093,7 @@ object JGitUtil {
    */
   def getContentFromId(git: Git, id: ObjectId, fetchLargeFile: Boolean): Option[Array[Byte]] =
     try {
-      using(git.getRepository.getObjectDatabase) { db =>
+      Using.resource(git.getRepository.getObjectDatabase) { db =>
         val loader = db.open(id)
         if (loader.isLarge || (fetchLargeFile == false && FileUtil.isLarge(loader.getSize))) {
           None
@@ -1044,7 +1115,7 @@ object JGitUtil {
    */
   def getObjectLoaderFromId[A](git: Git, id: ObjectId)(f: ObjectLoader => A): Option[A] =
     try {
-      using(git.getRepository.getObjectDatabase) { db =>
+      Using.resource(git.getRepository.getObjectDatabase) { db =>
         Some(f(db.open(id)))
       }
     } catch {
@@ -1067,8 +1138,8 @@ object JGitUtil {
     }
 
   def processTree[T](git: Git, id: ObjectId)(f: (String, CanonicalTreeParser) => T): Seq[T] = {
-    using(new RevWalk(git.getRepository)) { revWalk =>
-      using(new TreeWalk(git.getRepository)) { treeWalk =>
+    Using.resource(new RevWalk(git.getRepository)) { revWalk =>
+      Using.resource(new TreeWalk(git.getRepository)) { treeWalk =>
         val index = treeWalk.addTree(revWalk.parseTree(id))
         treeWalk.setRecursive(true)
         val result = new collection.mutable.ListBuffer[T]()
@@ -1102,6 +1173,7 @@ object JGitUtil {
   /**
    * Fetch pull request contents into refs/pull/${issueId}/head and return (commitIdTo, commitIdFrom)
    */
+  // TODO should take Git instead of owner and username for testability
   def updatePullRequest(
     userName: String,
     repositoryName: String,
@@ -1111,7 +1183,7 @@ object JGitUtil {
     requestRepositoryName: String,
     requestBranch: String
   ): (String, String) =
-    using(
+    Using.resources(
       Git.open(Directory.getRepositoryDir(userName, repositoryName)),
       Git.open(Directory.getRepositoryDir(requestUserName, requestRepositoryName))
     ) { (oldGit, newGit) =>
@@ -1146,44 +1218,42 @@ object JGitUtil {
     git.log.add(startCommit).addPath(path).setMaxCount(1).call.iterator.next
   }
 
-  def getBranches(owner: String, name: String, defaultBranch: String, origin: Boolean): Seq[BranchInfo] = {
-    using(Git.open(getRepositoryDir(owner, name))) { git =>
-      val repo = git.getRepository
-      val defaultObject = repo.resolve(defaultBranch)
+  def getBranches(git: Git, defaultBranch: String, origin: Boolean): Seq[BranchInfo] = {
+    val repo = git.getRepository
+    val defaultObject = repo.resolve(defaultBranch)
 
-      git.branchList.call.asScala.map { ref =>
-        val walk = new RevWalk(repo)
-        try {
-          val defaultCommit = walk.parseCommit(defaultObject)
-          val branchName = ref.getName.stripPrefix("refs/heads/")
-          val branchCommit = walk.parseCommit(ref.getObjectId)
-          val when = branchCommit.getCommitterIdent.getWhen
-          val committer = branchCommit.getCommitterIdent.getName
-          val committerEmail = branchCommit.getCommitterIdent.getEmailAddress
-          val mergeInfo = if (origin && branchName == defaultBranch) {
-            None
-          } else {
-            walk.reset()
-            walk.setRevFilter(RevFilter.MERGE_BASE)
-            walk.markStart(branchCommit)
-            walk.markStart(defaultCommit)
-            val mergeBase = walk.next()
-            walk.reset()
-            walk.setRevFilter(RevFilter.ALL)
-            Some(
-              BranchMergeInfo(
-                ahead = RevWalkUtils.count(walk, branchCommit, mergeBase),
-                behind = RevWalkUtils.count(walk, defaultCommit, mergeBase),
-                isMerged = walk.isMergedInto(branchCommit, defaultCommit)
-              )
+    git.branchList.call.asScala.map { ref =>
+      val walk = new RevWalk(repo)
+      try {
+        val defaultCommit = walk.parseCommit(defaultObject)
+        val branchName = ref.getName.stripPrefix("refs/heads/")
+        val branchCommit = walk.parseCommit(ref.getObjectId)
+        val when = branchCommit.getCommitterIdent.getWhen
+        val committer = branchCommit.getCommitterIdent.getName
+        val committerEmail = branchCommit.getCommitterIdent.getEmailAddress
+        val mergeInfo = if (origin && branchName == defaultBranch) {
+          None
+        } else {
+          walk.reset()
+          walk.setRevFilter(RevFilter.MERGE_BASE)
+          walk.markStart(branchCommit)
+          walk.markStart(defaultCommit)
+          val mergeBase = walk.next()
+          walk.reset()
+          walk.setRevFilter(RevFilter.ALL)
+          Some(
+            BranchMergeInfo(
+              ahead = RevWalkUtils.count(walk, branchCommit, mergeBase),
+              behind = RevWalkUtils.count(walk, defaultCommit, mergeBase),
+              isMerged = walk.isMergedInto(branchCommit, defaultCommit)
             )
-          }
-          BranchInfo(branchName, committer, when, committerEmail, mergeInfo, ref.getObjectId.name)
-        } finally {
-          walk.dispose()
+          )
         }
+        BranchInfo(branchName, committer, when, committerEmail, mergeInfo, ref.getObjectId.name)
+      } finally {
+        walk.dispose()
       }
-    }
+    }.toSeq
   }
 
   def getBlame(git: Git, id: String, path: String): Iterable[BlameInfo] = {
@@ -1195,7 +1265,7 @@ object JGitUtil {
         val blame = blamer.call()
         var blameMap = Map[String, JGitUtil.BlameInfo]()
         var idLine = List[(String, Int)]()
-        val commits = 0.to(blame.getResultContents().size() - 1).map { i =>
+        0.to(blame.getResultContents().size() - 1).map { i =>
           val c = blame.getSourceCommit(i)
           if (!blameMap.contains(c.name)) {
             blameMap += c.name -> JGitUtil.BlameInfo(
@@ -1213,7 +1283,7 @@ object JGitUtil {
           }
           idLine :+= (c.name, i)
         }
-        val limeMap = idLine.groupBy(_._1).mapValues(_.map(_._2).toSet)
+        val limeMap = idLine.groupBy(_._1).view.mapValues(_.map(_._2).toSet)
         blameMap.values.map { b =>
           b.copy(lines = limeMap(b.id))
         }
@@ -1230,29 +1300,12 @@ object JGitUtil {
    * @return sha1
    */
   def getShaByRef(owner: String, name: String, revstr: String): Option[String] = {
-    using(Git.open(getRepositoryDir(owner, name))) { git =>
+    Using.resource(Git.open(getRepositoryDir(owner, name))) { git =>
       Option(git.getRepository.resolve(revstr)).map(ObjectId.toString(_))
     }
   }
 
-  def getFileSize(git: Git, repository: RepositoryService.RepositoryInfo, treeWalk: TreeWalk): Long = {
-    val attrs = treeWalk.getAttributes
-    val loader = git.getRepository.open(treeWalk.getObjectId(0))
-    if (attrs.containsKey("filter") && attrs.get("filter").getValue == "lfs") {
-      val lfsAttrs = getLfsAttributes(loader)
-      lfsAttrs.get("size").map(_.toLong).get
-    } else {
-      loader.getSize
-    }
-  }
-
-  def getFileSize(git: Git, repository: RepositoryService.RepositoryInfo, tree: RevTree, path: String): Long = {
-    using(TreeWalk.forPath(git.getRepository, path, tree)) { treeWalk =>
-      getFileSize(git, repository, treeWalk)
-    }
-  }
-
-  def openFile[T](git: Git, repository: RepositoryService.RepositoryInfo, treeWalk: TreeWalk)(
+  private def openFile[T](git: Git, repository: RepositoryService.RepositoryInfo, treeWalk: TreeWalk)(
     f: InputStream => T
   ): T = {
     val attrs = treeWalk.getAttributes
@@ -1262,15 +1315,14 @@ object JGitUtil {
       if (lfsAttrs.nonEmpty) {
         val oid = lfsAttrs("oid").split(":")(1)
 
-        val file = new File(FileUtil.getLfsFilePath(repository.owner, repository.name, oid))
-        using(new FileInputStream(FileUtil.getLfsFilePath(repository.owner, repository.name, oid))) { in =>
+        Using.resource(new FileInputStream(FileUtil.getLfsFilePath(repository.owner, repository.name, oid))) { in =>
           f(in)
         }
       } else {
         throw new NoSuchElementException("LFS attribute is empty.")
       }
     } else {
-      using(loader.openStream()) { in =>
+      Using.resource(loader.openStream()) { in =>
         f(in)
       }
     }
@@ -1279,7 +1331,7 @@ object JGitUtil {
   def openFile[T](git: Git, repository: RepositoryService.RepositoryInfo, tree: RevTree, path: String)(
     f: InputStream => T
   ): T = {
-    using(TreeWalk.forPath(git.getRepository, path, tree)) { treeWalk =>
+    Using.resource(TreeWalk.forPath(git.getRepository, path, tree)) { treeWalk =>
       openFile(git, repository, treeWalk)(f)
     }
   }

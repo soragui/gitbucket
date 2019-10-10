@@ -8,6 +8,7 @@ import gitbucket.core.service.SystemSettingsService._
 import gitbucket.core.util.ConfigUtil._
 import gitbucket.core.util.Directory._
 import gitbucket.core.util.SyntaxSugars._
+import scala.util.Using
 
 trait SystemSettingsService {
 
@@ -69,19 +70,8 @@ trait SystemSettingsService {
       }
       props.setProperty(SkinName, settings.skinName.toString)
       props.setProperty(ShowMailAddress, settings.showMailAddress.toString)
-      props.setProperty(PluginNetworkInstall, settings.pluginNetworkInstall.toString)
-      settings.pluginProxy.foreach { proxy =>
-        props.setProperty(PluginProxyHost, proxy.host)
-        props.setProperty(PluginProxyPort, proxy.port.toString)
-        proxy.user.foreach { user =>
-          props.setProperty(PluginProxyUser, user)
-        }
-        proxy.password.foreach { password =>
-          props.setProperty(PluginProxyPassword, password)
-        }
-      }
 
-      using(new java.io.FileOutputStream(GitBucketConf)) { out =>
+      Using.resource(new java.io.FileOutputStream(GitBucketConf)) { out =>
         props.store(out, null)
       }
     }
@@ -90,7 +80,7 @@ trait SystemSettingsService {
   def loadSystemSettings(): SystemSettings = {
     defining(new java.util.Properties()) { props =>
       if (GitBucketConf.exists) {
-        using(new java.io.FileInputStream(GitBucketConf)) { in =>
+        Using.resource(new java.io.FileInputStream(GitBucketConf)) { in =>
           props.load(in)
         }
       }
@@ -156,18 +146,7 @@ trait SystemSettingsService {
           None
         },
         getValue(props, SkinName, "skin-blue"),
-        getValue(props, ShowMailAddress, false),
-        getValue(props, PluginNetworkInstall, false),
-        if (getValue(props, PluginProxyHost, "").nonEmpty) {
-          Some(
-            Proxy(
-              getValue(props, PluginProxyHost, ""),
-              getValue(props, PluginProxyPort, 8080),
-              getOptionValue(props, PluginProxyUser, None),
-              getOptionValue(props, PluginProxyPassword, None)
-            )
-          )
-        } else None
+        getValue(props, ShowMailAddress, false)
       )
     }
   }
@@ -196,9 +175,7 @@ object SystemSettingsService {
     oidcAuthentication: Boolean,
     oidc: Option[OIDC],
     skinName: String,
-    showMailAddress: Boolean,
-    pluginNetworkInstall: Boolean,
-    pluginProxy: Option[Proxy]
+    showMailAddress: Boolean
   ) {
 
     def baseUrl(request: HttpServletRequest): String =

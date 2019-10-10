@@ -16,6 +16,7 @@ object Markdown {
    * Converts Markdown of Wiki pages to HTML.
    *
    * @param repository the repository which contains the markdown
+   * @param branch the target branch
    * @param enableWikiLink if true then wiki style link is available in markdown
    * @param enableRefsLink if true then issue reference (e.g. #123) is rendered as link
    * @param enableAnchor if true then anchor for headline is generated
@@ -27,6 +28,7 @@ object Markdown {
   def toHtml(
     markdown: String,
     repository: RepositoryService.RepositoryInfo,
+    branch: String,
     enableWikiLink: Boolean,
     enableRefsLink: Boolean,
     enableAnchor: Boolean,
@@ -45,6 +47,7 @@ object Markdown {
     val renderer = new GitBucketMarkedRenderer(
       options,
       repository,
+      branch,
       enableWikiLink,
       enableRefsLink,
       enableAnchor,
@@ -62,6 +65,7 @@ object Markdown {
   class GitBucketMarkedRenderer(
     options: Options,
     repository: RepositoryService.RepositoryInfo,
+    branch: String,
     enableWikiLink: Boolean,
     enableRefsLink: Boolean,
     enableAnchor: Boolean,
@@ -131,11 +135,11 @@ object Markdown {
     }
 
     override def link(href: String, title: String, text: String): String = {
-      super.link(fixUrl(href, false), title, text)
+      super.link(fixUrl(href, branch, false), title, text)
     }
 
     override def image(href: String, title: String, text: String): String = {
-      super.image(fixUrl(href, true), title, text)
+      super.image(fixUrl(href, branch, true), title, text)
     }
 
     override def nolink(text: String): String = {
@@ -162,27 +166,34 @@ object Markdown {
       }
     }
 
-    private def fixUrl(url: String, isImage: Boolean = false): String = {
+    private def fixUrl(url: String, branch: String, isImage: Boolean = false): String = {
       lazy val urlWithRawParam: String = url + (if (isImage && !url.endsWith("?raw=true")) "?raw=true" else "")
 
-      if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("mailto:") || url.startsWith("/")) {
+      if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("mailto:")) {
         url
+      } else if (url.startsWith("/")) {
+        context.baseUrl + url
       } else if (url.startsWith("#")) {
         ("#" + generateAnchorName(url.substring(1)))
-      } else if (!enableWikiLink) {
-        if (context.currentPath.contains("/blob/")) {
-          urlWithRawParam
-        } else if (context.currentPath.contains("/tree/")) {
-          val paths = context.currentPath.split("/")
-          val branch = if (paths.length > 3) paths.drop(4).mkString("/") else repository.repository.defaultBranch
-          repository.httpUrl.replaceFirst("/git/", "/").stripSuffix(".git") + "/blob/" + branch + "/" + urlWithRawParam
-        } else {
-          val paths = context.currentPath.split("/")
-          val branch = if (paths.length > 3) paths.last else repository.repository.defaultBranch
-          repository.httpUrl.replaceFirst("/git/", "/").stripSuffix(".git") + "/blob/" + branch + "/" + urlWithRawParam
-        }
       } else {
-        repository.httpUrl.replaceFirst("/git/", "/").stripSuffix(".git") + "/wiki/_blob/" + url
+        // Relative path
+        if (!enableWikiLink) {
+          if (context.currentPath.contains("/blob/")) {
+            val paths = context.currentPath.split("/").dropRight(1)
+            val path = if (paths.length > 3) paths.drop(4).mkString("/") else branch
+            repository.httpUrl.replaceFirst("/git/", "/").stripSuffix(".git") + "/blob/" + path + "/" + urlWithRawParam
+          } else if (context.currentPath.contains("/tree/")) {
+            val paths = context.currentPath.split("/")
+            val path = if (paths.length > 3) paths.drop(4).mkString("/") else branch
+            repository.httpUrl.replaceFirst("/git/", "/").stripSuffix(".git") + "/blob/" + path + "/" + urlWithRawParam
+          } else {
+            repository.httpUrl
+              .replaceFirst("/git/", "/")
+              .stripSuffix(".git") + "/blob/" + branch + "/" + urlWithRawParam
+          }
+        } else {
+          repository.httpUrl.replaceFirst("/git/", "/").stripSuffix(".git") + "/wiki/_blob/" + url
+        }
       }
     }
 

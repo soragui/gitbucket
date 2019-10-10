@@ -3,10 +3,10 @@ import com.typesafe.sbt.pgp.PgpKeys._
 
 val Organization = "io.github.gitbucket"
 val Name = "gitbucket"
-val GitBucketVersion = "4.28.0"
-val ScalatraVersion = "2.6.3"
-val JettyVersion = "9.4.11.v20180605"
-val JgitVersion = "5.0.1.201806211838-r"
+val GitBucketVersion = "4.32.0"
+val ScalatraVersion = "2.7.0-RC1"
+val JettyVersion = "9.4.20.v20190813"
+val JgitVersion = "5.4.3.201909031940-r"
 
 lazy val root = (project in file("."))
   .enablePlugins(SbtTwirl, ScalatraPlugin)
@@ -17,17 +17,17 @@ sourcesInBase := false
 organization := Organization
 name := Name
 version := GitBucketVersion
-scalaVersion := "2.12.6"
+scalaVersion := "2.13.1"
 
 scalafmtOnCompile := true
+
+coverageExcludedPackages := ".*\\.html\\..*"
 
 // dependency settings
 resolvers ++= Seq(
   Classpaths.typesafeReleases,
   Resolver.jcenterRepo,
-  "amateras" at "http://amateras.sourceforge.jp/mvn/",
-  "sonatype-snapshot" at "https://oss.sonatype.org/content/repositories/snapshots/",
-  "amateras-snapshot" at "http://amateras.sourceforge.jp/mvn-snapshot/"
+  "sonatype-snapshot" at "https://oss.sonatype.org/content/repositories/snapshots/"
 )
 
 libraryDependencies ++= Seq(
@@ -36,45 +36,46 @@ libraryDependencies ++= Seq(
   "org.scalatra"                    %% "scalatra"                    % ScalatraVersion,
   "org.scalatra"                    %% "scalatra-json"               % ScalatraVersion,
   "org.scalatra"                    %% "scalatra-forms"              % ScalatraVersion,
-  "org.json4s"                      %% "json4s-jackson"              % "3.5.3",
+  "org.json4s"                      %% "json4s-jackson"              % "3.6.7",
   "commons-io"                      % "commons-io"                   % "2.6",
-  "io.github.gitbucket"             % "solidbase"                    % "1.0.2",
-  "io.github.gitbucket"             % "markedj"                      % "1.0.15",
-  "org.apache.commons"              % "commons-compress"             % "1.15",
+  "io.github.gitbucket"             % "solidbase"                    % "1.0.3",
+  "io.github.gitbucket"             % "markedj"                      % "1.0.16",
+  "org.apache.commons"              % "commons-compress"             % "1.19",
   "org.apache.commons"              % "commons-email"                % "1.5",
-  "org.apache.httpcomponents"       % "httpclient"                   % "4.5.4",
-  "org.apache.sshd"                 % "apache-sshd"                  % "1.6.0" exclude ("org.slf4j", "slf4j-jdk14"),
-  "org.apache.tika"                 % "tika-core"                    % "1.17",
-  "com.github.takezoe"              %% "blocking-slick-32"           % "0.0.10",
+  "org.apache.httpcomponents"       % "httpclient"                   % "4.5.10",
+  "org.apache.sshd"                 % "apache-sshd"                  % "2.1.0" exclude ("org.slf4j", "slf4j-jdk14") exclude ("org.apache.sshd", "sshd-mina") exclude ("org.apache.sshd", "sshd-netty"),
+  "org.apache.tika"                 % "tika-core"                    % "1.22",
+  "com.github.takezoe"              %% "blocking-slick-32"           % "0.0.12",
   "com.novell.ldap"                 % "jldap"                        % "2009-10-07",
-  "com.h2database"                  % "h2"                           % "1.4.196",
-  "org.mariadb.jdbc"                % "mariadb-java-client"          % "2.2.6",
-  "org.postgresql"                  % "postgresql"                   % "42.2.4",
+  "com.h2database"                  % "h2"                           % "1.4.199",
+  "org.mariadb.jdbc"                % "mariadb-java-client"          % "2.4.4",
+  "org.postgresql"                  % "postgresql"                   % "42.2.6",
   "ch.qos.logback"                  % "logback-classic"              % "1.2.3",
-  "com.zaxxer"                      % "HikariCP"                     % "2.7.4",
-  "com.typesafe"                    % "config"                       % "1.3.2",
-  "com.typesafe.akka"               %% "akka-actor"                  % "2.5.8",
-  "fr.brouillard.oss.security.xhub" % "xhub4j-core"                  % "1.0.0",
+  "com.zaxxer"                      % "HikariCP"                     % "3.4.1",
+  "com.typesafe"                    % "config"                       % "1.3.4",
+  "com.typesafe.akka"               %% "akka-actor"                  % "2.5.25",
+  "fr.brouillard.oss.security.xhub" % "xhub4j-core"                  % "1.1.0",
   "com.github.bkromhout"            % "java-diff-utils"              % "2.1.1",
-  "org.cache2k"                     % "cache2k-all"                  % "1.0.1.Final",
-  "com.enragedginger"               %% "akka-quartz-scheduler"       % "1.6.1-akka-2.5.x" exclude ("c3p0", "c3p0"),
+  "org.cache2k"                     % "cache2k-all"                  % "1.2.4.Final",
+  "com.enragedginger"               %% "akka-quartz-scheduler"       % "1.8.1-akka-2.5.x" exclude ("com.mchange", "c3p0") exclude ("com.zaxxer", "HikariCP-java6"),
   "net.coobird"                     % "thumbnailator"                % "0.4.8",
   "com.github.zafarkhaja"           % "java-semver"                  % "0.9.0",
-  "com.nimbusds"                    % "oauth2-oidc-sdk"              % "5.45",
+  "com.nimbusds"                    % "oauth2-oidc-sdk"              % "5.64.4",
   "org.eclipse.jetty"               % "jetty-webapp"                 % JettyVersion % "provided",
   "javax.servlet"                   % "javax.servlet-api"            % "3.1.0" % "provided",
   "junit"                           % "junit"                        % "4.12" % "test",
   "org.scalatra"                    %% "scalatra-scalatest"          % ScalatraVersion % "test",
-  "org.mockito"                     % "mockito-core"                 % "2.13.0" % "test",
-  "com.wix"                         % "wix-embedded-mysql"           % "3.0.0" % "test",
-  "ru.yandex.qatools.embed"         % "postgresql-embedded"          % "2.6" % "test",
-  "net.i2p.crypto"                  % "eddsa"                        % "0.2.0",
-  "is.tagomor.woothee"              % "woothee-java"                 % "1.7.0",
-  "org.ec4j.core"                   % "ec4j-core"                    % "0.0.1"
+  "org.mockito"                     % "mockito-core"                 % "3.0.0" % "test",
+  "com.dimafeng"                    %% "testcontainers-scala"        % "0.32.0" % "test",
+  "org.testcontainers"              % "mysql"                        % "1.12.1" % "test",
+  "org.testcontainers"              % "postgresql"                   % "1.12.1" % "test",
+  "net.i2p.crypto"                  % "eddsa"                        % "0.3.0",
+  "is.tagomor.woothee"              % "woothee-java"                 % "1.10.1",
+  "org.ec4j.core"                   % "ec4j-core"                    % "0.0.3"
 )
 
 // Compiler settings
-scalacOptions := Seq("-deprecation", "-language:postfixOps", "-opt:l:method", "-Xfuture")
+scalacOptions := Seq("-deprecation", "-language:postfixOps", "-opt:l:method")
 javacOptions in compile ++= Seq("-target", "8", "-source", "8")
 javaOptions in Jetty += "-Dlogback.configurationFile=/logback-dev.xml"
 
@@ -162,8 +163,8 @@ executableKey := {
   plugins.foreach { plugin =>
     plugin.trim.split(":") match {
       case Array(pluginId, pluginVersion) =>
-        val url = "https://plugins.gitbucket-community.org/releases/" +
-          s"gitbucket-${pluginId}-plugin/gitbucket-${pluginId}-plugin-gitbucket_${version.value}-${pluginVersion}.jar"
+        val url = "https://github.com/" +
+          s"gitbucket/gitbucket-${pluginId}-plugin/releases/download/${pluginVersion}/gitbucket-${pluginId}-plugin-${pluginVersion}.jar"
         log info s"Download: ${url}"
         IO transfer (new java.net.URL(url).openStream, pluginsDir / url.substring(url.lastIndexOf("/") + 1))
       case _ => ()
@@ -254,4 +255,18 @@ pomExtra := (
 licenseOverrides := {
   case DepModuleInfo("com.github.bkromhout", "java-diff-utils", _) =>
     LicenseInfo(LicenseCategory.Apache, "Apache-2.0", "http://www.apache.org/licenses/LICENSE-2.0")
+}
+
+testOptions in Test ++= {
+  if (scala.util.Properties.isWin) {
+    Seq(
+      Tests.Exclude(
+        Set(
+          "gitbucket.core.GitBucketCoreModuleSpec"
+        )
+      )
+    )
+  } else {
+    Nil
+  }
 }

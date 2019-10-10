@@ -1,4 +1,4 @@
-GitBucket [![Gitter chat](https://badges.gitter.im/gitbucket/gitbucket.svg)](https://gitter.im/gitbucket/gitbucket) [![Build Status](https://travis-ci.org/gitbucket/gitbucket.svg?branch=master)](https://travis-ci.org/gitbucket/gitbucket) [![Maven Central](https://img.shields.io/maven-central/v/io.github.gitbucket/gitbucket_2.12.svg)](https://maven-badges.herokuapp.com/maven-central/io.github.gitbucket/gitbucket_2.12) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/gitbucket/gitbucket/blob/master/LICENSE)
+GitBucket [![Gitter chat](https://badges.gitter.im/gitbucket/gitbucket.svg)](https://gitter.im/gitbucket/gitbucket) [![Build Status](https://travis-ci.org/gitbucket/gitbucket.svg?branch=master)](https://travis-ci.org/gitbucket/gitbucket) [![Maven Central](https://maven-badges.herokuapp.com/maven-central/io.github.gitbucket/gitbucket_2.13/badge.svg)](https://maven-badges.herokuapp.com/maven-central/io.github.gitbucket/gitbucket_2.13) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/gitbucket/gitbucket/blob/master/LICENSE)
 =========
 
 GitBucket is a Git web platform powered by Scala offering:
@@ -22,7 +22,7 @@ The current version of GitBucket provides many features such as:
 - Account and group management with LDAP integration
 - a Plug-in system
 
-If you want to try the development version of GitBucket, see the [Developer's Guide](https://github.com/gitbucket/gitbucket/blob/master/doc/how_to_run.md).
+If you want to try the development version of GitBucket, see the [Developer's Guide](https://github.com/gitbucket/gitbucket/blob/master/doc/readme.md).
 
 Installation
 --------
@@ -39,10 +39,11 @@ You can specify following options:
 - `--gitbucket.home=[DATA_DIR]`
 - `--temp_dir=[TEMP_DIR]`
 - `--max_file_size=[MAX_FILE_SIZE]`
+- `--upload_timeout=[MAX_UPLOAD_TIMEOUT]`
 
 `TEMP_DIR` is used as the [temporary directory for the jetty application context](https://www.eclipse.org/jetty/documentation/9.3.x/ref-temporary-directories.html). This is the directory into which the `gitbucket.war` file is unpacked, the source files are compiled, etc. If given this parameter **must** match the path of an existing directory or the application will quit reporting an error; if not given the path used will be a `tmp` directory inside the gitbucket home.
 
-`MAX_FILE_SIZE` is the max file size for upload files.
+`MAX_FILE_SIZE` is the max file size in bytes for upload files *( default is 3 MB -> 3 x 1024 x 1024 )*.
 
 You can also deploy `gitbucket.war` to a servlet container which supports Servlet 3.0 (like Jetty, Tomcat, JBoss, etc)
 
@@ -68,11 +69,15 @@ Support
 - If you can't find same question and report, send it to [gitter room](https://gitter.im/gitbucket/gitbucket) before raising an issue.
 - The highest priority of GitBucket is the ease of installation and API compatibility with GitHub, so your feature request might be rejected if they go against those principles.
 
-What's New in 4.27.x
+What's New in 4.32.x
 -------------
-### 4.28.0 - 1 Sep 2018
-- Proxy support for plugin installation
-- Fix some bugs around pull requests
+### 4.32.0 - 7 Aug 2019
 
+- Bump to Scala 2.13.0 and Scalatra 2.7.0
+- Draft pull request
+- Drop network installation of plugins
+- Compare view works for commit id
+- Apply default priority to pull requests
+- Focus title after clicking issue / pull request edit button
 
 See the [change log](CHANGELOG.md) for all of the updates.

@@ -1,9 +1,9 @@
-How to run from the source tree
+How to build and run from the source tree
 ========
 
-Install [sbt](http://www.scala-sbt.org/index.html) at first.
+First of all, Install [sbt](http://www.scala-sbt.org/index.html).
 
-```
+```shell
 $ brew install sbt
 ```
 
@@ -12,7 +12,7 @@ Run for Development
 
 If you want to test GitBucket, type the following command in the root directory of the source tree.
 
-```
+```shell
 $ sbt ~jetty:start
 ```
 
@@ -25,15 +25,15 @@ Build war file
 
 To build war file, run the following command:
 
-```
+```shell
 $ sbt package
 ```
 
-`gitbucket_2.12-x.x.x.war` is generated into `target/scala-2.12`.
+`gitbucket_2.13-x.x.x.war` is generated into `target/scala-2.13`.
 
 To build an executable war file, run
 
-```
+```shell
 $ sbt executable
 ```
 
@@ -41,8 +41,21 @@ at the top of the source tree. It generates executable `gitbucket.war` into `tar
 
 Run tests spec
 ---------
+Before running tests, you need to install docker.
+
+```shell
+$ brew cask install docker       # Install Docker
+$ open /Applications/Docker.app  # Start Docker
+```
+
 To run the full series of tests, run the following command:
 
-```
+```shell
 $ sbt test
+```
+
+If you don't have docker, you can skip docker tests which require docker as follows:
+
+```shell
+$ sbt "testOnly * -- -l ExternalDBTest"
 ```
